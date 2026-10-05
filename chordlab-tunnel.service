@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Named Tunnel for chord.suika.page
+After=network-online.target chordlab.service
+Wants=network-online.target chordlab.service
+
+[Service]
+Type=simple
+ExecStart=/home/suika/chordlab/vendor/cloudflared/usr/bin/cloudflared tunnel --config /home/suika/.cloudflared/chordlab.yml run
+Restart=always
+RestartSec=8
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

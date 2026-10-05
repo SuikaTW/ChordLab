@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#15181b">
+  <title>ChordLab</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#workspace" aria-label="ChordLab 工作台"><span class="brand-mark">CL</span><span>ChordLab</span></a>
+    <nav class="top-nav" aria-label="主要頁面"><button data-page="workspace" class="active">分析工作台</button><button data-page="library">公開樂庫</button></nav>
+    <div class="top-actions"><span id="queueStatus" class="status-pill queue-pill">讀取佇列</span><span id="engineStatus" class="status-pill"><i></i>檢查分析引擎</span><form method="post" action="/logout"><button class="icon-button" title="登出" aria-label="登出"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h5a1 1 0 011 1v16a1 1 0 01-1 1h-5"/></svg></button></form></div>
+  </header>
+
+  <main class="shell" id="workspacePage">
+    <aside class="left-rail">
+      <section class="import-panel">
+        <div class="section-heading"><div><p class="eyebrow">NEW ANALYSIS</p><h1>匯入音樂</h1></div><span class="step">01</span></div>
+        <div class="source-tabs" role="tablist"><button class="tab active" data-tab="url">貼上網址</button><button class="tab" data-tab="file">上傳音檔</button></div>
+        <form id="importForm">
+          <label class="field"><span>作品名稱 <em>選填</em></span><input name="title" placeholder="例如：練團曲目 A"></label>
+          <label class="field source-url"><span>音樂網址</span><div class="url-field"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 007.1.1l2-2a5 5 0 00-7.1-7.1l-1.1 1.1M14 11a5 5 0 00-7.1-.1l-2 2A5 5 0 0012 20l1.1-1.1"/></svg><input name="url" type="url" placeholder="YouTube、SoundCloud、Bandcamp…"></div></label>
+          <label class="drop-zone source-file hidden" id="dropZone"><input name="file" type="file" accept="audio/*,.mp4,.webm"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5l5 5M5 15v4a1 1 0 001 1h12a1 1 0 001-1v-4"/></svg><b>選擇或拖曳音訊</b><span id="fileName">MP3 / WAV / FLAC / M4A，最多 200 MB</span></label>
+          <label class="stem-option"><input id="separateStems" name="separate_stems" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>分離音軌後分析 <em>CPU · 較慢</em></b><small>移除人聲、Bass 與鼓後分析和聲，並提供獨立音軌。</small></span></label>
+          <div id="separationOptions" class="separation-options hidden">
+            <label>分離精細度<select name="separation_model"><option value="htdemucs">標準四軌</option><option value="htdemucs_6s">細分六軌（吉他／鋼琴為實驗性）</option></select></label>
+            <label class="mini-check"><input name="stem_midi" type="checkbox" value="true"><span>產生各樂器／人聲 MIDI</span><small>不含鼓；會明顯增加分析時間</small></label>
+          </div>
+          <label class="stem-option lyric-option"><input name="transcribe_lyrics" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>辨識歌詞與時間</b><small>優先使用人聲軌，並把對時歌詞加入 PDF；歌唱辨識可能需要人工校正。</small></span></label>
+          <div class="submit-row"><button class="primary" type="submit"><span>開始分析</span><svg viewBox="0 0 24 24"><path d="M5 12h14m-5-5l5 5-5 5"/></svg></button><label class="public-toggle"><input name="is_public" type="checkbox" value="true"><span><b>公開分析</b><small>完成後可被搜尋、收藏與重複使用</small></span></label></div>
+          <p class="fine-print">僅供你有權使用的音訊。Spotify 受 DRM 保護的歌曲連結無法直接下載，可改貼合法來源或上傳音檔。</p>
+        </form>
+      </section>
+      <section class="jobs-panel">
+        <div class="panel-title"><h2>最近分析</h2><button id="refreshJobs" class="text-button">重新整理</button></div>
+        <div id="jobsList" class="jobs-list"><div class="empty-small">還沒有分析紀錄</div></div>
+      </section>
+    </aside>
+
+    <section class="workspace" id="workspace">
+      <div id="emptyWorkspace" class="empty-workspace">
+        <div class="empty-graphic"><span>♩</span><span>♯</span><span>7</span></div>
+        <p class="eyebrow">ANALYSIS WORKSPACE</p>
+        <h2>從左側加入第一首歌</h2>
+        <p>Chordino 先找出整首和弦；Basic Pitch 同時轉錄音符與 MIDI。完成後可以逐段校正，再匯出成你要的格式。</p>
+      </div>
+
+      <div id="activeWorkspace" class="active-workspace hidden">
+        <div class="workspace-head">
+          <div><p class="eyebrow" id="workMeta">ANALYSIS</p><h2 id="workTitle">—</h2><p id="workMessage" class="muted"></p></div>
+          <div class="workspace-actions"><button class="secondary visibility-button hidden" id="visibilityToggle">私人分析</button><div class="export-menu"><button class="secondary" id="exportToggle">匯出 <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button><div id="exportOptions" class="export-options hidden"><a data-export="pdf">PDF 和弦表</a><a data-export="midi">MIDI 音符</a><a data-export="chordpro">ChordPro</a><a data-export="json">專案 JSON</a></div></div></div>
+        </div>
+
+        <div id="progressPanel" class="progress-panel hidden"><div class="progress-row"><span id="progressText">分析中</span><b id="progressValue">0%</b></div><div class="progress-track"><i id="progressBar"></i></div><p id="progressHelp">伺服器會依序完成音訊轉換、Basic Pitch 音符辨識與 Chordino 和弦辨識。</p></div>
+
+        <div id="resultsPanel" class="results-panel hidden">
+          <div id="trackRow" class="track-row hidden"><span>播放音軌</span><div id="trackSwitch" class="track-switch"></div><small id="analysisTrackLabel"></small></div>
+          <audio id="audioPlayer" controls preload="metadata"></audio>
+          <div class="method-row"><div class="method-switch"><button data-method="chordino" class="active">Chordino</button><button data-method="basic_pitch">Basic Pitch</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
+          <div id="stemDownloads" class="stem-downloads hidden"></div>
+          <div class="timeline-wrap"><div class="timeline-ruler" id="timelineRuler"></div><div class="timeline" id="timeline"></div></div>
+
+          <section id="fullTabPanel" class="full-tab-panel hidden">
+            <div class="panel-title"><div><p class="eyebrow">CONTINUOUS TAB</p><h3>連續動態 TAB</h3></div><span id="tabSource" class="save-state"></span></div>
+            <div id="tabFlowViewport" class="tab-flow-viewport"><div id="continuousTab" class="continuous-tab"></div></div>
+            <p class="voicing-notes">依音高、可用弦與前後把位推算；空白處代表不用彈，播放時會自動跟隨。</p>
+          </section>
+
+          <section id="lyricsPanel" class="lyrics-panel hidden">
+            <div class="panel-title"><div><p class="eyebrow">TIMED LYRICS</p><h3>對時歌詞</h3></div><span id="lyricsLanguage" class="save-state"></span></div>
+            <div id="lyricsList" class="lyrics-list"></div>
+          </section>
+
+          <div class="detail-grid">
+            <section class="chord-detail">
+              <div class="panel-title"><div><p class="eyebrow">GUITAR VOICING</p><h3 id="selectedChord">選擇一個和弦</h3></div><button id="playChord" class="icon-button" title="播放和弦" aria-label="播放和弦"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>
+              <div id="fretboard" class="tablature empty"><span>點一下時間軸上的和弦，這裡會顯示橫向六線譜、格數與音名。</span></div>
+              <p id="voicingNotes" class="voicing-notes"></p>
+            </section>
+            <section class="segment-editor">
+              <div class="panel-title"><div><p class="eyebrow">MANUAL CORRECTION</p><h3>人工修正</h3></div><span id="saveState" class="save-state">尚未修改</span></div>
+              <div id="editorEmpty" class="editor-empty">先從時間軸選擇一段</div>
+              <form id="segmentForm" class="hidden">
+                <label>和弦名稱<input id="chordInput" maxlength="24" placeholder="例如 C#m7"></label>
+                <div class="time-fields"><label>開始（秒）<input id="startInput" type="number" min="0" step="0.01"></label><label>結束（秒）<input id="endInput" type="number" min="0" step="0.01"></label></div>
+                <div class="editor-actions"><button type="button" id="deleteSegment" class="danger-text">刪除此段</button><button type="submit" class="secondary">套用並儲存</button></div>
+              </form>
+            </section>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <main id="libraryPage" class="library-page hidden">
+    <section class="library-hero"><div><p class="eyebrow">COMMUNITY ANALYSES</p><h1>公開樂庫</h1><p>先搜尋是否已經有人分析過；直接播放、查看和弦與 TAB，不必再排一次。</p></div><button class="primary compact" data-page="workspace">新增分析</button></section>
+    <section class="library-controls"><label class="library-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l4 4"/></svg><input id="librarySearch" type="search" placeholder="搜尋歌名或作品名稱" autocomplete="off"></label><div class="library-sort" role="tablist"><button data-library-sort="recent" class="active">最新公開</button><button data-library-sort="views">最多人看</button><button data-library-sort="favorites">最多收藏</button></div></section>
+    <div id="librarySummary" class="library-summary">讀取公開分析…</div>
+    <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/app.js?v=8" defer></script>
+</body>
+</html>

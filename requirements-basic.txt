@@ -1,0 +1,2 @@
+basic-pitch[onnx]>=0.4.0,<0.5
+setuptools<81

@@ -1,0 +1,15 @@
+.env
+.venv*/
+data/
+bin/
+vendor/cloudflared/
+vendor/toolchain/
+vendor/whisper/
+vendor/vamp/
+__pycache__/
+*.pyc
+.pytest_cache/
+client_secret*.json
+token.json
+*.log
+*.pdf

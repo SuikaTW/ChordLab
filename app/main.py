@@ -1,0 +1,1113 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import html
+import ipaddress
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import sqlite3
+import subprocess
+import threading
+import time
+import uuid
+import wave
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Annotated
+from urllib.parse import urlparse
+
+from authlib.integrations.starlette_client import OAuth
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from starlette.middleware.sessions import SessionMiddleware
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "data"
+JOBS = Path(os.getenv("CHORDLAB_JOBS_DIR", str(DATA / "jobs"))).expanduser()
+if not JOBS.is_absolute():
+    raise RuntimeError("CHORDLAB_JOBS_DIR 必須是絕對路徑")
+STORAGE_MOUNT = Path(os.getenv("CHORDLAB_STORAGE_MOUNT", "")).expanduser() if os.getenv("CHORDLAB_STORAGE_MOUNT") else None
+DB_PATH = DATA / "chordlab.sqlite3"
+STATIC = ROOT / "app" / "static"
+BASIC_PYTHON = ROOT / ".venv-basic" / "bin" / "python"
+CHORDINO_PYTHON = ROOT / ".venv-chordino" / "bin" / "python"
+DEMUCS_PYTHON = ROOT / ".venv-demucs" / "bin" / "python"
+WHISPER_PYTHON = ROOT / ".venv-whisper" / "bin" / "python"
+VAMP_PATH = ROOT / "vendor" / "vamp"
+FFMPEG = ROOT / "bin" / "ffmpeg"
+MAX_UPLOAD = int(os.getenv("CHORDLAB_MAX_UPLOAD_MB", "200")) * 1024 * 1024
+MAX_DURATION = int(os.getenv("CHORDLAB_MAX_DURATION_MIN", "20")) * 60
+ANALYSIS_WORKERS = max(1, min(3, int(os.getenv("CHORDLAB_ANALYSIS_WORKERS", "1"))))
+MAX_ACTIVE_PER_USER = max(1, min(10, int(os.getenv("CHORDLAB_MAX_ACTIVE_PER_USER", "2"))))
+ALLOWED_HOSTS = {
+    host.strip().lower()
+    for host in os.getenv(
+        "CHORDLAB_MEDIA_HOSTS",
+        "youtube.com,youtu.be,music.youtube.com,soundcloud.com,bandcamp.com,bilibili.com,vimeo.com",
+    ).split(",")
+    if host.strip()
+}
+USERNAME = os.getenv("CHORDLAB_USERNAME", "")
+PASSWORD = os.getenv("CHORDLAB_PASSWORD", "")
+SECRET = os.getenv("CHORDLAB_SECRET", "")
+SECURE_COOKIE = os.getenv("CHORDLAB_SECURE_COOKIE", "true").lower() not in {"0", "false", "no"}
+COOKIE = "chordlab_session"
+GOOGLE_OAUTH_FILE = os.getenv("GOOGLE_OAUTH_FILE", "").strip()
+
+
+def google_oauth_credentials() -> tuple[str, str]:
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+    if GOOGLE_OAUTH_FILE:
+        try:
+            payload = json.loads(Path(GOOGLE_OAUTH_FILE).read_text(encoding="utf-8"))
+            web = payload.get("web") or {}
+            client_id = client_id or str(web.get("client_id") or "").strip()
+            client_secret = client_secret or str(web.get("client_secret") or "").strip()
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("GOOGLE_OAUTH_FILE 無法讀取或不是有效的 OAuth JSON") from exc
+    return client_id, client_secret
+
+
+GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET = google_oauth_credentials()
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "https://chord.suika.page/auth/google/callback").strip()
+GOOGLE_ALLOWED_EMAILS = {
+    email.strip().lower() for email in os.getenv("GOOGLE_ALLOWED_EMAILS", "").split(",") if email.strip()
+}
+GOOGLE_ADMIN_EMAILS = {
+    email.strip().lower() for email in os.getenv("GOOGLE_ADMIN_EMAILS", "").split(",") if email.strip()
+}
+GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+executor = ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS, thread_name_prefix="chordlab")
+heavy_analysis_slot = threading.BoundedSemaphore(1)
+job_submission_lock = threading.Lock()
+login_attempts: dict[str, list[float]] = {}
+login_lock = threading.Lock()
+
+app = FastAPI(title="ChordLab", docs_url=None, redoc_url=None)
+app.add_middleware(SessionMiddleware, secret_key=SECRET or secrets.token_hex(32), https_only=SECURE_COOKIE, same_site="lax", max_age=600)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+oauth = OAuth()
+if GOOGLE_ENABLED:
+    oauth.register(
+        name="google",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+
+
+def db() -> sqlite3.Connection:
+    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute("PRAGMA foreign_keys=ON")
+    return connection
+
+
+def init_db() -> None:
+    DATA.mkdir(exist_ok=True)
+    JOBS.mkdir(parents=True, exist_ok=True)
+    with db() as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                duration REAL,
+                note_count INTEGER,
+                result TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "separate_stems" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN separate_stems INTEGER NOT NULL DEFAULT 0")
+        if "owner" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN owner TEXT NOT NULL DEFAULT 'legacy'")
+        if "separation_model" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN separation_model TEXT NOT NULL DEFAULT 'htdemucs'")
+        if "stem_midi" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN stem_midi INTEGER NOT NULL DEFAULT 0")
+        if "transcribe_lyrics" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN transcribe_lyrics INTEGER NOT NULL DEFAULT 0")
+        if "source_kind" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'upload'")
+            connection.execute("UPDATE jobs SET source_kind='url' WHERE source LIKE 'http://%' OR source LIKE 'https://%'")
+        if "is_public" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
+        if "public_at" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN public_at INTEGER")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_views (
+                job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                viewer TEXT NOT NULL,
+                viewed_at INTEGER NOT NULL,
+                PRIMARY KEY (job_id, viewer)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_favorites (
+                job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                owner TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (job_id, owner)
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner_status ON jobs(owner, status)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_public_status ON jobs(is_public, status, public_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_job_views_rank ON job_views(job_id, viewed_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_job_favorites_rank ON job_favorites(job_id, created_at)")
+        connection.execute("PRAGMA optimize")
+
+
+def sign_session(subject: str, provider: str, expires: int) -> str:
+    body = base64.urlsafe_b64encode(json.dumps(
+        {"sub": subject, "provider": provider, "expires": expires}, separators=(",", ":")
+    ).encode()).decode().rstrip("=")
+    signature = hmac.new(SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{signature}"
+
+
+def session_identity(token: str | None) -> dict | None:
+    if not token or not SECRET:
+        return None
+    try:
+        body, signature = token.rsplit(".", 1)
+        expected = hmac.new(SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+        padded = body + "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+        valid = (
+            payload.get("provider") in {"local", "google"}
+            and bool(payload.get("sub"))
+            and int(payload["expires"]) > int(time.time())
+            and hmac.compare_digest(signature, expected)
+        )
+        return {"sub": str(payload["sub"]).lower(), "provider": payload["provider"]} if valid else None
+    except (KeyError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def is_admin(identity: dict) -> bool:
+    return identity["provider"] == "local" or identity["sub"] in GOOGLE_ADMIN_EMAILS
+
+
+@app.middleware("http")
+async def authentication(request: Request, call_next):
+    public = request.url.path in {"/login", "/api/health", "/auth/google", "/auth/google/callback"} or request.url.path.startswith("/static/")
+    if not public:
+        identity = session_identity(request.cookies.get(COOKIE))
+        if not identity:
+            if request.url.path.startswith("/api/"):
+                return JSONResponse({"detail": "請先登入"}, status_code=401)
+            return RedirectResponse("/login", status_code=303)
+        request.state.identity = identity
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path != "/login":
+        origin = request.headers.get("origin")
+        if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+            return JSONResponse({"detail": "來源驗證失敗"}, status_code=403)
+    return await call_next(request)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    if not USERNAME or not PASSWORD or len(SECRET) < 32:
+        raise RuntimeError("CHORDLAB_USERNAME, CHORDLAB_PASSWORD and a 32+ character CHORDLAB_SECRET are required")
+    if STORAGE_MOUNT and not STORAGE_MOUNT.is_mount():
+        raise RuntimeError(f"歌曲資料磁碟尚未掛載：{STORAGE_MOUNT}")
+    init_db()
+    with db() as connection:
+        connection.execute("UPDATE jobs SET status='queued', progress=2, message='服務重啟，已重新加入佇列' WHERE status='working'")
+        pending = connection.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id").fetchall()
+    for row in pending:
+        executor.submit(
+            process_job,
+            row["id"],
+            row["source_kind"],
+            row["source"],
+            bool(row["separate_stems"]),
+            row["separation_model"],
+            bool(row["stem_midi"]),
+            bool(row["transcribe_lyrics"]),
+        )
+
+
+@app.get("/api/health")
+def health() -> dict:
+    return {
+        "ok": True,
+        "basic_pitch": BASIC_PYTHON.exists(),
+        "chordino": CHORDINO_PYTHON.exists() and (VAMP_PATH / "nnls-chroma.so").exists(),
+        "demucs": DEMUCS_PYTHON.exists(),
+        "whisper": WHISPER_PYTHON.exists(),
+        "google_login": GOOGLE_ENABLED,
+        "analysis_workers": ANALYSIS_WORKERS,
+        "storage_ready": not STORAGE_MOUNT or STORAGE_MOUNT.is_mount(),
+    }
+
+
+@app.get("/api/me")
+def current_user(request: Request) -> dict:
+    identity = request.state.identity
+    viewer_key = hashlib.sha256(f"{identity['provider']}:{identity['sub']}".encode()).hexdigest()[:16]
+    return {"key": viewer_key, "admin": is_admin(identity)}
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(error: str = "") -> str:
+    errors = {
+        "1": "帳號或密碼錯誤",
+        "google": "Google 登入失敗，請再試一次",
+        "denied": "這個 Google 帳號沒有使用權限",
+    }
+    error_html = f'<p class="login-error">{errors.get(error, "登入失敗")}</p>' if error else ""
+    google_html = (
+        '<a class="google-login" href="/auth/google"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.6h3.3c1.9-1.8 2.9-4.4 2.9-7.5z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.7-2.3l-3.3-2.6c-.9.6-2.1 1-3.4 1-2.6 0-4.8-1.8-5.6-4.2H3v2.7A10 10 0 0 0 12 22z"/><path fill="#FBBC05" d="M6.4 13.9A6 6 0 0 1 6.1 12c0-.7.1-1.3.3-1.9V7.4H3A10 10 0 0 0 2 12c0 1.7.4 3.2 1 4.6l3.4-2.7z"/><path fill="#EA4335" d="M12 5.9c1.5 0 2.8.5 3.9 1.5l2.9-2.9A9.8 9.8 0 0 0 3 7.4l3.4 2.7A6 6 0 0 1 12 5.9z"/></svg>使用 Google 登入</a><div class="login-divider"><span>或使用密碼</span></div>'
+        if GOOGLE_ENABLED
+        else '<p class="oauth-pending">Google 登入等待 OAuth 憑證，現在仍可使用原帳密。</p>'
+    )
+    return f"""<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>ChordLab 登入</title><link rel=\"icon\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/style.css?v=3\"></head><body class=\"login-body\"><main class=\"login-card\"><div class=\"brand-mark\">CL</div><p class=\"eyebrow\">PRIVATE MUSIC WORKSPACE</p><h1>ChordLab</h1><p class=\"muted\">把音訊變成可編輯的和弦、吉他按法與樂譜檔案。</p>{error_html}{google_html}<form method=\"post\" action=\"/login\"><label>帳號<input name=\"username\" autocomplete=\"username\" required autofocus></label><label>密碼<input type=\"password\" name=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">登入工作台</button></form></main></body></html>"""
+
+
+@app.get("/auth/google")
+async def google_login(request: Request) -> Response:
+    if not GOOGLE_ENABLED:
+        return RedirectResponse("/login", status_code=303)
+    return await oauth.google.authorize_redirect(request, GOOGLE_REDIRECT_URI)
+
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request) -> Response:
+    if not GOOGLE_ENABLED:
+        return RedirectResponse("/login", status_code=303)
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        identity = token.get("userinfo") or {}
+        email = str(identity.get("email") or "").lower()
+        if not email or not identity.get("email_verified"):
+            return RedirectResponse("/login?error=google", status_code=303)
+        if GOOGLE_ALLOWED_EMAILS and email not in GOOGLE_ALLOWED_EMAILS:
+            return RedirectResponse("/login?error=denied", status_code=303)
+    except Exception:
+        return RedirectResponse("/login?error=google", status_code=303)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(COOKIE, sign_session(email, "google", int(time.time()) + 30 * 86400), max_age=30 * 86400, httponly=True, secure=SECURE_COOKIE, samesite="lax")
+    return response
+
+
+@app.post("/login")
+def login(request: Request, username: Annotated[str, Form()], password: Annotated[str, Form()]) -> Response:
+    peer = request.client.host if request.client else "unknown"
+    if peer in {"127.0.0.1", "::1"}:
+        peer = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", peer).split(",", 1)[0].strip()
+    now = time.time()
+    with login_lock:
+        attempts = [stamp for stamp in login_attempts.get(peer, []) if now - stamp < 300]
+        login_attempts[peer] = attempts
+        if len(attempts) >= 5:
+            return PlainTextResponse("登入嘗試過多，請五分鐘後再試。", status_code=429)
+    if not hmac.compare_digest(username, USERNAME) or not hmac.compare_digest(password, PASSWORD):
+        with login_lock:
+            login_attempts.setdefault(peer, []).append(now)
+        return RedirectResponse("/login?error=1", status_code=303)
+    with login_lock:
+        login_attempts.pop(peer, None)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(COOKIE, sign_session(username, "local", int(time.time()) + 30 * 86400), max_age=30 * 86400, httponly=True, secure=SECURE_COOKIE, samesite="strict")
+    return response
+
+
+@app.post("/logout")
+def logout() -> Response:
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE)
+    return response
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(STATIC / "index.html")
+
+
+def serialize_job(row: sqlite3.Row, include_result: bool = True) -> dict:
+    payload = dict(row)
+    if include_result:
+        payload["result"] = json.loads(payload["result"]) if payload.get("result") else None
+        if payload["result"]:
+            method = payload["result"].get("active_method", "chordino")
+            methods = payload["result"].get("methods", {})
+            selected = methods.get(method, [])
+            if not any(segment.get("chord") != "N" for segment in selected):
+                selected = methods.get("basic_pitch", [])
+                if any(segment.get("chord") != "N" for segment in selected):
+                    payload["result"]["active_method"] = "basic_pitch"
+            if not payload["result"].get("key"):
+                payload["result"]["key"] = detect_key(selected)
+    else:
+        payload.pop("result", None)
+    return payload
+
+
+def add_queue_metadata(connection: sqlite3.Connection, payloads: list[dict]) -> None:
+    queued = connection.execute("SELECT id FROM jobs WHERE status='queued' ORDER BY created_at, id").fetchall()
+    positions = {row["id"]: index for index, row in enumerate(queued, start=1)}
+    active_jobs = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='working'").fetchone()[0]
+    for payload in payloads:
+        payload["queue_position"] = positions.get(payload["id"])
+        payload["analysis_workers"] = ANALYSIS_WORKERS
+        payload["active_jobs"] = active_jobs
+        payload["ahead_count"] = (
+            active_jobs + positions[payload["id"]] - 1 if payload["id"] in positions else 0
+        )
+
+
+@app.get("/api/queue")
+def queue_status() -> dict:
+    with db() as connection:
+        working = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='working'").fetchone()[0]
+        waiting = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
+    return {"working": working, "waiting": waiting, "total": working + waiting, "workers": ANALYSIS_WORKERS}
+
+
+@app.get("/api/jobs")
+def list_jobs(request: Request) -> list[dict]:
+    identity = request.state.identity
+    with db() as connection:
+        if is_admin(identity):
+            rows = connection.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 40").fetchall()
+        else:
+            rows = connection.execute("SELECT * FROM jobs WHERE owner=? ORDER BY created_at DESC LIMIT 40", (identity["sub"],)).fetchall()
+        payloads = [serialize_job(row, include_result=False) for row in rows]
+        for payload in payloads:
+            payload["mine"] = payload["owner"] == identity["sub"]
+        add_queue_metadata(connection, payloads)
+    return payloads
+
+
+def accessible_job(request: Request, job_id: str) -> sqlite3.Row:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    identity = request.state.identity
+    public_access = bool(row and row["is_public"] and row["status"] == "done")
+    if not row or (not is_admin(identity) and row["owner"] != identity["sub"] and not public_access):
+        raise HTTPException(404, "找不到分析工作")
+    return row
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(request: Request, job_id: str) -> dict:
+    row = accessible_job(request, job_id)
+    payload = serialize_job(row)
+    payload["mine"] = payload["owner"] == request.state.identity["sub"]
+    if not payload["mine"] and not is_admin(request.state.identity):
+        payload.pop("owner", None)
+        payload.pop("source", None)
+    with db() as connection:
+        add_queue_metadata(connection, [payload])
+    return payload
+
+
+def public_summary(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "duration": row["duration"],
+        "note_count": row["note_count"],
+        "separate_stems": bool(row["separate_stems"]),
+        "separation_model": row["separation_model"],
+        "transcribe_lyrics": bool(row["transcribe_lyrics"]),
+        "created_at": row["created_at"],
+        "public_at": row["public_at"],
+        "view_count": row["view_count"],
+        "favorite_count": row["favorite_count"],
+        "is_favorite": bool(row["is_favorite"]),
+    }
+
+
+@app.get("/api/public/jobs")
+def list_public_jobs(
+    request: Request,
+    search: Annotated[str, Query(max_length=80)] = "",
+    sort: Annotated[str, Query()] = "recent",
+) -> list[dict]:
+    order_by = {
+        "recent": "COALESCE(j.public_at, j.updated_at) DESC, j.id DESC",
+        "views": "view_count DESC, COALESCE(j.public_at, j.updated_at) DESC",
+        "favorites": "favorite_count DESC, COALESCE(j.public_at, j.updated_at) DESC",
+    }.get(sort)
+    if not order_by:
+        raise HTTPException(400, "未知的排序方式")
+    query = f"""
+        SELECT j.*,
+          (SELECT COUNT(*) FROM job_views v WHERE v.job_id=j.id) AS view_count,
+          (SELECT COUNT(*) FROM job_favorites f WHERE f.job_id=j.id) AS favorite_count,
+          EXISTS(SELECT 1 FROM job_favorites mine WHERE mine.job_id=j.id AND mine.owner=?) AS is_favorite
+        FROM jobs j
+        WHERE j.is_public=1 AND j.status='done' AND j.title LIKE ?
+        ORDER BY {order_by}
+        LIMIT 60
+    """
+    with db() as connection:
+        rows = connection.execute(query, (request.state.identity["sub"], f"%{search.strip()}%")).fetchall()
+    return [public_summary(row) for row in rows]
+
+
+@app.get("/api/public/jobs/{job_id}")
+def get_public_job(request: Request, job_id: str) -> dict:
+    viewer = request.state.identity["sub"]
+    with db() as connection:
+        row = connection.execute(
+            "SELECT * FROM jobs WHERE id=? AND is_public=1 AND status='done'", (job_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "找不到公開分析")
+        connection.execute(
+            "INSERT OR IGNORE INTO job_views(job_id,viewer,viewed_at) VALUES (?,?,?)",
+            (job_id, viewer, int(time.time())),
+        )
+        view_count = connection.execute("SELECT COUNT(*) FROM job_views WHERE job_id=?", (job_id,)).fetchone()[0]
+        favorite_count = connection.execute("SELECT COUNT(*) FROM job_favorites WHERE job_id=?", (job_id,)).fetchone()[0]
+        is_favorite = connection.execute(
+            "SELECT 1 FROM job_favorites WHERE job_id=? AND owner=?", (job_id, viewer)
+        ).fetchone()
+    payload = serialize_job(row)
+    payload["mine"] = row["owner"] == viewer
+    payload["view_count"] = view_count
+    payload["favorite_count"] = favorite_count
+    payload["is_favorite"] = bool(is_favorite)
+    payload.pop("owner", None)
+    payload.pop("source", None)
+    return payload
+
+
+class VisibilityUpdate(BaseModel):
+    is_public: bool
+
+
+@app.put("/api/jobs/{job_id}/visibility")
+def update_visibility(request: Request, job_id: str, update: VisibilityUpdate) -> dict:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        identity = request.state.identity
+        if not row or (row["owner"] != identity["sub"] and not is_admin(identity)):
+            raise HTTPException(404, "找不到分析工作")
+        if update.is_public and row["status"] != "done":
+            raise HTTPException(400, "分析完成後才能公開")
+        connection.execute(
+            "UPDATE jobs SET is_public=?, public_at=?, updated_at=? WHERE id=?",
+            (int(update.is_public), int(time.time()) if update.is_public else None, int(time.time()), job_id),
+        )
+    return {"ok": True, "is_public": update.is_public}
+
+
+@app.post("/api/public/jobs/{job_id}/favorite")
+def toggle_favorite(request: Request, job_id: str) -> dict:
+    owner = request.state.identity["sub"]
+    with db() as connection:
+        public_job = connection.execute(
+            "SELECT 1 FROM jobs WHERE id=? AND is_public=1 AND status='done'", (job_id,)
+        ).fetchone()
+        if not public_job:
+            raise HTTPException(404, "找不到公開分析")
+        existing = connection.execute(
+            "SELECT 1 FROM job_favorites WHERE job_id=? AND owner=?", (job_id, owner)
+        ).fetchone()
+        if existing:
+            connection.execute("DELETE FROM job_favorites WHERE job_id=? AND owner=?", (job_id, owner))
+            favorited = False
+        else:
+            connection.execute(
+                "INSERT INTO job_favorites(job_id,owner,created_at) VALUES (?,?,?)",
+                (job_id, owner, int(time.time())),
+            )
+            favorited = True
+        count = connection.execute("SELECT COUNT(*) FROM job_favorites WHERE job_id=?", (job_id,)).fetchone()[0]
+    return {"favorited": favorited, "favorite_count": count}
+
+
+@app.get("/api/jobs/{job_id}/notes/{track}")
+def get_track_notes(request: Request, job_id: str, track: str) -> dict:
+    row = accessible_job(request, job_id)
+    if not row["result"]:
+        raise HTTPException(404, "尚無音符結果")
+    result = json.loads(row["result"])
+    separation = result.get("separation") or {}
+    if track == separation.get("analysis_stem") or track == "analysis":
+        return {"source": separation.get("analysis_stem", "original"), "notes": result.get("notes", [])}
+    if track not in set(separation.get("midi_stems", [])):
+        raise HTTPException(404, "這個音軌沒有音符資料")
+    path = job_file(job_id, f"stem-midi/{track}.json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {"source": track, "notes": payload.get("notes", [])}
+
+
+def update_job(job_id: str, **changes) -> None:
+    changes["updated_at"] = int(time.time())
+    assignments = ", ".join(f"{key}=?" for key in changes)
+    with db() as connection:
+        connection.execute(f"UPDATE jobs SET {assignments} WHERE id=?", (*changes.values(), job_id))
+
+
+def ensure_public_url(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(400, "請輸入完整的 http(s) 音樂網址")
+    hostname = parsed.hostname.lower().rstrip(".")
+    if not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in ALLOWED_HOSTS):
+        raise HTTPException(400, "此網域未開放自動下載；請改用上傳音檔")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)}
+        if not addresses or any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback or ipaddress.ip_address(address).is_reserved for address in addresses):
+            raise HTTPException(400, "基於伺服器安全，不能存取內網網址")
+    except socket.gaierror as exc:
+        raise HTTPException(400, "網址主機無法解析") from exc
+    return value.strip()
+
+
+def safe_title(value: str) -> str:
+    cleaned = re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", " ", value).strip()
+    return cleaned[:120] or "未命名分析"
+
+
+@app.post("/api/jobs", status_code=202)
+async def create_job(
+    request: Request,
+    url: Annotated[str | None, Form()] = None,
+    title: Annotated[str | None, Form()] = None,
+    file: UploadFile | None = File(default=None),
+    separate_stems: Annotated[bool, Form()] = False,
+    separation_model: Annotated[str, Form()] = "htdemucs",
+    stem_midi: Annotated[bool, Form()] = False,
+    transcribe_lyrics: Annotated[bool, Form()] = False,
+    is_public: Annotated[bool, Form()] = False,
+) -> dict:
+    if bool(url and url.strip()) == bool(file and file.filename):
+        raise HTTPException(400, "請選擇網址或音檔其中一種")
+    owner = request.state.identity["sub"]
+    with db() as connection:
+        active_count = connection.execute(
+            "SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')", (owner,)
+        ).fetchone()[0]
+    if active_count >= MAX_ACTIVE_PER_USER:
+        raise HTTPException(429, f"你已有 {MAX_ACTIVE_PER_USER} 個工作正在處理或排隊，請完成後再加入")
+    job_id = uuid.uuid4().hex
+    job_dir = JOBS / job_id
+    job_dir.mkdir(mode=0o700)
+    source = "upload"
+    if file and file.filename:
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".mp4"}:
+            shutil.rmtree(job_dir)
+            raise HTTPException(400, "不支援這個檔案格式")
+        incoming = job_dir / f"source{suffix}"
+        size = 0
+        with incoming.open("wb") as target:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD:
+                    target.close()
+                    shutil.rmtree(job_dir)
+                    raise HTTPException(413, "檔案超過大小限制")
+                target.write(chunk)
+        display_title = safe_title(title or Path(file.filename).stem)
+        source_detail = file.filename
+    else:
+        source = "url"
+        source_detail = ensure_public_url(url or "")
+        display_title = safe_title(title or "網址匯入")
+    if separation_model not in {"htdemucs", "htdemucs_6s"}:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(400, "未知的分軌模型")
+    if not separate_stems:
+        separation_model = "htdemucs"
+        stem_midi = False
+    if source == "url":
+        with db() as connection:
+            duplicate = connection.execute(
+                """
+                SELECT id FROM jobs
+                WHERE source=? AND source_kind='url' AND status='done' AND is_public=1
+                  AND separate_stems=? AND separation_model=?
+                  AND stem_midi>=? AND transcribe_lyrics>=?
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (source_detail, int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics)),
+            ).fetchone()
+        if duplicate:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return {"id": duplicate["id"], "status": "done", "reused": True}
+    now = int(time.time())
+    with job_submission_lock:
+        with db() as connection:
+            active_count = connection.execute(
+                "SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')", (owner,)
+            ).fetchone()[0]
+            if active_count >= MAX_ACTIVE_PER_USER:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise HTTPException(429, f"你已有 {MAX_ACTIVE_PER_USER} 個工作正在處理或排隊，請完成後再加入")
+            connection.execute(
+                "INSERT INTO jobs (id,title,source,source_kind,status,progress,message,separate_stems,separation_model,stem_midi,transcribe_lyrics,is_public,public_at,owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (job_id, display_title, source_detail, source, "queued", 2, "等待處理", int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(is_public), now if is_public else None, owner, now, now),
+            )
+        executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics)
+    return {"id": job_id, "status": "queued"}
+
+
+def run_command(command: list[str], *, env: dict | None = None, timeout: int = 1800) -> subprocess.CompletedProcess:
+    result = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=timeout)
+    if result.returncode:
+        diagnostic = (result.stderr or result.stdout or "未知錯誤")[-3000:]
+        raise RuntimeError(diagnostic)
+    return result
+
+
+def normalize_audio(source: Path, destination: Path) -> float:
+    run_command([str(FFMPEG), "-nostdin", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le", str(destination)], timeout=600)
+    with wave.open(str(destination), "rb") as audio:
+        duration = audio.getnframes() / audio.getframerate()
+    if duration < 1:
+        raise RuntimeError("音訊長度不足一秒")
+    if duration > MAX_DURATION:
+        raise RuntimeError(f"音訊超過 {MAX_DURATION // 60} 分鐘限制")
+    return duration
+
+
+def separate_audio(job_id: str, source: Path, directory: Path, model: str) -> tuple[Path, list[str]]:
+    if not DEMUCS_PYTHON.exists():
+        raise RuntimeError("四軌分離引擎尚未安裝完成")
+    demucs_input = directory / "separation-input.wav"
+    update_job(job_id, progress=30, message="準備四軌分離音訊")
+    run_command([
+        str(FFMPEG), "-nostdin", "-y", "-i", str(source), "-vn", "-ac", "2", "-ar", "44100",
+        "-c:a", "pcm_s16le", str(demucs_input),
+    ], timeout=600)
+    output_root = directory / "demucs-output"
+    detailed = model == "htdemucs_6s"
+    update_job(job_id, progress=36, message="分離六軌：人聲、Bass、鼓、吉他、鋼琴與其他樂器" if detailed else "分離人聲、Bass、鼓與其他樂器（CPU 會需要一段時間）")
+    demucs_env = os.environ.copy()
+    demucs_env["PATH"] = f"{ROOT / 'bin'}:{demucs_env.get('PATH', '')}"
+    run_command([
+        str(DEMUCS_PYTHON), "-m", "demucs.separate",
+        "--name", model, "--device", "cpu", "--shifts", "0", "--overlap", "0.1", "--jobs", "1",
+        "--mp3", "--mp3-bitrate", "320",
+        "--out", str(output_root), str(demucs_input),
+    ], env=demucs_env, timeout=5400)
+    generated = output_root / model / demucs_input.stem
+    stems = directory / "stems"
+    stems.mkdir(mode=0o700)
+    stem_names = ["vocals", "bass", "drums", "other"] + (["guitar", "piano"] if detailed else [])
+    for stem in stem_names:
+        candidate = generated / f"{stem}.mp3"
+        if not candidate.is_file():
+            raise RuntimeError(f"四軌分離完成，但缺少 {stem} 音軌")
+        run_command([
+            str(FFMPEG), "-nostdin", "-y", "-i", str(candidate), "-ac", "2", "-ar", "44100",
+            "-c:a", "pcm_s16le", str(stems / f"{stem}.wav"),
+        ], timeout=600)
+    shutil.rmtree(output_root, ignore_errors=True)
+    demucs_input.unlink(missing_ok=True)
+    if detailed:
+        harmony = stems / "harmony.wav"
+        run_command([
+            str(FFMPEG), "-nostdin", "-y", "-i", str(stems / "other.wav"), "-i", str(stems / "guitar.wav"),
+            "-i", str(stems / "piano.wav"), "-filter_complex", "amix=inputs=3:normalize=1", "-ac", "2", "-ar", "44100",
+            "-c:a", "pcm_s16le", str(harmony),
+        ], timeout=600)
+        return harmony, ["original", "harmony", *stem_names]
+    return stems / "other.wav", ["original", *stem_names]
+
+
+def download_url(job_id: str, url: str, directory: Path) -> tuple[Path, str]:
+    update_job(job_id, progress=8, message="讀取網址資訊")
+    ytdlp = ROOT / ".venv" / "bin" / "yt-dlp"
+    metadata = run_command([str(ytdlp), "--dump-single-json", "--no-playlist", "--socket-timeout", "15", url], timeout=90)
+    info = json.loads(metadata.stdout)
+    duration = float(info.get("duration") or 0)
+    if duration and duration > MAX_DURATION:
+        raise RuntimeError(f"音訊超過 {MAX_DURATION // 60} 分鐘限制")
+    title = safe_title(str(info.get("title") or "網址匯入"))
+    output = directory / "download.%(ext)s"
+    update_job(job_id, title=title, progress=14, message="下載音訊")
+    run_command([
+        str(ytdlp), "--no-playlist", "--no-part", "--restrict-filenames", "--max-filesize", str(MAX_UPLOAD),
+        "-f", "bestaudio/best", "-o", str(output), url,
+    ], timeout=900)
+    candidates = [path for path in directory.glob("download.*") if path.is_file()]
+    if not candidates:
+        raise RuntimeError("下載完成但找不到音訊檔")
+    return candidates[0], title
+
+
+KEY_NAMES = ("C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+KEY_ROOTS = {"C": 0, "B#": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "Fb": 4,
+             "E#": 5, "F": 5, "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10,
+             "Bb": 10, "B": 11, "Cb": 11}
+MAJOR_PROFILE = (6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
+MINOR_PROFILE = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
+
+
+def detect_key(chords: list[dict]) -> dict | None:
+    chroma = [0.0] * 12
+    for segment in chords:
+        label = str(segment.get("chord") or "")
+        match = re.match(r"^([A-G](?:#|b)?)(.*)$", label)
+        if not match or match.group(1) not in KEY_ROOTS or label == "N":
+            continue
+        root = KEY_ROOTS[match.group(1)]
+        quality = match.group(2).lower()
+        minor = quality.startswith("m") and not quality.startswith("maj")
+        diminished = "dim" in quality or "b5" in quality
+        tones = (0, 3, 6) if diminished else ((0, 3, 7) if minor else (0, 4, 7))
+        duration = max(0.05, float(segment.get("end", 0)) - float(segment.get("start", 0)))
+        for index, interval in enumerate(tones):
+            chroma[(root + interval) % 12] += duration * (1.35 if index == 0 else 0.7)
+    if not any(chroma):
+        return None
+    scores: list[tuple[float, int, str]] = []
+    for tonic in range(12):
+        for mode, profile in (("major", MAJOR_PROFILE), ("minor", MINOR_PROFILE)):
+            score = sum(chroma[pitch] * profile[(pitch - tonic) % 12] for pitch in range(12))
+            scores.append((score, tonic, mode))
+    scores.sort(reverse=True)
+    best, second = scores[0], scores[1]
+    confidence = max(0.0, min(0.99, (best[0] - second[0]) / max(best[0], 1e-9) * 4))
+    return {"tonic": KEY_NAMES[best[1]], "pitch_class": best[1], "mode": best[2], "label": f"{KEY_NAMES[best[1]]} {best[2]}", "confidence": round(confidence, 3)}
+
+
+def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], analysis_stem: str, midi_output: Path) -> tuple[list[str], dict[str, str]]:
+    output_dir = directory / "stem-midi"
+    output_dir.mkdir(mode=0o700)
+    completed: list[str] = []
+    failures: dict[str, str] = {}
+    if analysis_stem in stem_names:
+        shutil.copyfile(midi_output, output_dir / f"{analysis_stem}.mid")
+        completed.append(analysis_stem)
+    pitched_stems = [name for name in stem_names if name not in {"original", "drums", analysis_stem}]
+    for index, stem in enumerate(pitched_stems, start=1):
+        update_job(job_id, progress=min(90, 68 + index * 3), message=f"轉錄 {stem} 分軌 MIDI（{index}/{len(pitched_stems)}）")
+        source = directory / "stems" / f"{stem}.wav"
+        if not source.is_file():
+            continue
+        try:
+            run_command([
+                str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(source),
+                str(output_dir / f"{stem}.json"), str(output_dir / f"{stem}.mid"),
+            ], timeout=1800)
+            completed.append(stem)
+        except Exception as exc:
+            failures[stem] = str(exc)[-300:]
+    return completed, failures
+
+
+def transcribe_lyrics(job_id: str, audio: Path, directory: Path) -> dict:
+    if not WHISPER_PYTHON.exists():
+        raise RuntimeError("歌詞辨識引擎尚未安裝完成")
+    output = directory / "lyrics.json"
+    model = os.getenv("CHORDLAB_WHISPER_MODEL", "small").strip() or "small"
+    cache = ROOT / "vendor" / "whisper"
+    cache.mkdir(parents=True, exist_ok=True)
+    update_job(job_id, progress=55, message="辨識歌詞與對齊時間（第一次會下載語音模型）")
+    run_command([
+        str(WHISPER_PYTHON), str(ROOT / "tools" / "lyrics_worker.py"), str(audio), str(output),
+        "--model", model, "--cache", str(cache),
+    ], timeout=7200)
+    return json.loads(output.read_text(encoding="utf-8"))
+
+
+def process_job(
+    job_id: str,
+    source_kind: str,
+    source_detail: str,
+    separate_stems: bool = False,
+    separation_model: str = "htdemucs",
+    stem_midi: bool = False,
+    lyrics_requested: bool = False,
+) -> None:
+    directory = JOBS / job_id
+    try:
+        update_job(job_id, status="working", progress=5, message="準備音訊")
+        if source_kind == "url":
+            source, _title = download_url(job_id, source_detail, directory)
+        else:
+            source = next(directory.glob("source.*"))
+        audio = directory / "audio.wav"
+        update_job(job_id, progress=25, message="轉換成分析格式")
+        duration = normalize_audio(source, audio)
+        if separate_stems:
+            with heavy_analysis_slot:
+                analysis_audio, stem_names = separate_audio(job_id, source, directory, separation_model)
+            analysis_stem = "harmony" if separation_model == "htdemucs_6s" else "other"
+        else:
+            analysis_audio, stem_names, analysis_stem = audio, ["original"], "original"
+        lyrics = None
+        lyrics_error = None
+        if lyrics_requested:
+            lyrics_audio = directory / "stems" / "vocals.wav" if separate_stems else audio
+            try:
+                with heavy_analysis_slot:
+                    lyrics = transcribe_lyrics(job_id, lyrics_audio, directory)
+            except Exception as exc:
+                lyrics_error = str(exc)[-500:]
+        basic_progress = 68 if lyrics_requested else (62 if separate_stems else 36)
+        chordino_progress = 82 if separate_stems else 72
+        update_job(job_id, duration=duration, progress=basic_progress, message="Basic Pitch 辨識音符")
+        basic_output = directory / "basic_pitch.json"
+        midi_output = directory / "transcription.mid"
+        run_command([str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(analysis_audio), str(basic_output), str(midi_output)], timeout=1800)
+        basic = json.loads(basic_output.read_text(encoding="utf-8"))
+        midi_stems: list[str] = []
+        midi_errors: dict[str, str] = {}
+        if separate_stems and stem_midi:
+            midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, stem_names, analysis_stem, midi_output)
+            chordino_progress = 94
+        update_job(job_id, note_count=basic.get("note_count", 0), progress=chordino_progress, message="Chordino 辨識和弦與分析 Key")
+        chordino_output = directory / "chordino.json"
+        chordino_env = os.environ.copy()
+        chordino_env["VAMP_PATH"] = str(VAMP_PATH)
+        try:
+            run_command([str(CHORDINO_PYTHON), str(ROOT / "tools" / "chordino_worker.py"), str(analysis_audio), str(chordino_output)], env=chordino_env, timeout=1200)
+            chordino = json.loads(chordino_output.read_text(encoding="utf-8"))
+            chordino_chords = chordino["chords"]
+            chordino_error = None
+        except Exception as exc:
+            chordino_chords = []
+            chordino_error = str(exc)[-400:]
+        chordino_usable = any(segment.get("chord") != "N" for segment in chordino_chords)
+        preferred_chords = chordino_chords if chordino_usable else basic.get("chords", [])
+        result = {
+            "active_method": "chordino" if chordino_usable else "basic_pitch",
+            "methods": {"basic_pitch": basic.get("chords", []), "chordino": chordino_chords},
+            "notes": basic.get("notes", []),
+            "chordino_error": chordino_error,
+            "lyrics": lyrics,
+            "lyrics_error": lyrics_error,
+            "key": detect_key(preferred_chords),
+            "separation": {
+                "enabled": bool(separate_stems),
+                "model": separation_model if separate_stems else None,
+                "analysis_stem": analysis_stem,
+                "stems": stem_names,
+                "midi_stems": midi_stems,
+                "midi_errors": midi_errors,
+            },
+        }
+        update_job(job_id, status="done", progress=100, message="分析完成", result=json.dumps(result, ensure_ascii=False))
+    except Exception as exc:
+        update_job(job_id, status="failed", message=str(exc)[-1000:], progress=100)
+
+
+class ChordSegment(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    chord: str = Field(min_length=1, max_length=24)
+    confidence: float | None = None
+
+
+class ChordUpdate(BaseModel):
+    method: str
+    chords: list[ChordSegment]
+
+
+@app.put("/api/jobs/{job_id}/chords")
+def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
+    if update.method not in {"basic_pitch", "chordino"}:
+        raise HTTPException(400, "未知的分析方式")
+    row = accessible_job(request, job_id)
+    if not row["result"]:
+        raise HTTPException(404, "找不到可編輯結果")
+    duration = float(row["duration"] or 0)
+    chords = [segment.model_dump() for segment in sorted(update.chords, key=lambda item: item.start)]
+    for index, segment in enumerate(chords):
+        if segment["end"] <= segment["start"] or segment["end"] > duration + 0.25:
+            raise HTTPException(400, "和弦時間範圍錯誤")
+        if index and segment["start"] < chords[index - 1]["start"]:
+            raise HTTPException(400, "和弦順序錯誤")
+    result = json.loads(row["result"])
+    result["methods"][update.method] = chords
+    result["active_method"] = update.method
+    result["key"] = detect_key(chords)
+    update_job(job_id, result=json.dumps(result, ensure_ascii=False), message="已儲存人工修正")
+    return {"ok": True}
+
+
+def job_file(job_id: str, filename: str) -> Path:
+    path = JOBS / job_id / filename
+    if not path.is_file():
+        raise HTTPException(404, "檔案不存在")
+    return path
+
+
+@app.get("/api/jobs/{job_id}/audio")
+def audio(request: Request, job_id: str) -> FileResponse:
+    accessible_job(request, job_id)
+    return FileResponse(job_file(job_id, "audio.wav"), media_type="audio/wav", filename=f"{job_id}.wav")
+
+
+@app.get("/api/jobs/{job_id}/audio/{track}")
+def audio_track(request: Request, job_id: str, track: str) -> FileResponse:
+    row = accessible_job(request, job_id)
+    result = json.loads(row["result"]) if row["result"] else {}
+    allowed = set(result.get("separation", {}).get("stems", ["original"]))
+    if track not in allowed:
+        raise HTTPException(404, "未知的音軌")
+    if track == "original":
+        path = job_file(job_id, "audio.wav")
+    else:
+        path = job_file(job_id, f"stems/{track}.wav")
+    return FileResponse(path, media_type="audio/wav", filename=f"{track}.wav")
+
+
+def result_for_export(request: Request, job_id: str) -> tuple[sqlite3.Row, dict, list[dict]]:
+    row = accessible_job(request, job_id)
+    if not row["result"]:
+        raise HTTPException(404, "尚無分析結果")
+    result = serialize_job(row)["result"]
+    chords = result["methods"].get(result["active_method"], [])
+    return row, result, chords
+
+
+def validate_capo(capo: int) -> int:
+    if capo < 0 or capo > 11:
+        raise HTTPException(400, "Capo 必須介於 0 到 11 格")
+    return capo
+
+
+def transpose_chord_label(label: str, semitones: int) -> str:
+    if not label or label == "N":
+        return label
+    match = re.match(r"^([A-G](?:#|b)?)([^/]*)?(?:/([A-G](?:#|b)?))?$", label)
+    if not match or match.group(1) not in KEY_ROOTS:
+        return label
+    root = KEY_NAMES[(KEY_ROOTS[match.group(1)] + semitones) % 12]
+    bass = match.group(3)
+    bass_text = f"/{KEY_NAMES[(KEY_ROOTS[bass] + semitones) % 12]}" if bass in KEY_ROOTS else ""
+    return f"{root}{match.group(2) or ''}{bass_text}"
+
+
+@app.get("/api/jobs/{job_id}/export/midi")
+def export_midi(request: Request, job_id: str) -> FileResponse:
+    accessible_job(request, job_id)
+    path = job_file(job_id, "transcription.mid")
+    return FileResponse(path, media_type="audio/midi", filename="chordlab-transcription.mid")
+
+
+@app.get("/api/jobs/{job_id}/export/midi/{track}")
+def export_stem_midi(request: Request, job_id: str, track: str) -> FileResponse:
+    row = accessible_job(request, job_id)
+    result = json.loads(row["result"]) if row["result"] else {}
+    allowed = set(result.get("separation", {}).get("midi_stems", []))
+    if track not in allowed:
+        raise HTTPException(404, "這個音軌沒有 MIDI")
+    path = job_file(job_id, f"stem-midi/{track}.mid")
+    return FileResponse(path, media_type="audio/midi", filename=f"{safe_title(row['title'])}-{track}.mid")
+
+
+@app.get("/api/jobs/{job_id}/export/chordpro")
+def export_chordpro(request: Request, job_id: str, capo: int = 0) -> PlainTextResponse:
+    capo = validate_capo(capo)
+    row, result, chords = result_for_export(request, job_id)
+    key_info = result.get("key") or detect_key(chords) or {}
+    lines = [f"{{title: {row['title']}}}", f"{{capo: {capo}}}", f"{{comment: ChordLab · {result['active_method']} · Original key {key_info.get('label', 'unknown')}}}", ""]
+    for chord in chords:
+        minutes, seconds = divmod(float(chord["start"]), 60)
+        lines.append(f"{{comment: {int(minutes):02d}:{seconds:05.2f}}} [{transpose_chord_label(chord['chord'], -capo)}]")
+    headers = {"Content-Disposition": 'attachment; filename="chordlab.cho"'}
+    return PlainTextResponse("\n".join(lines), headers=headers, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/jobs/{job_id}/export/json")
+def export_json(request: Request, job_id: str, capo: int = 0) -> Response:
+    capo = validate_capo(capo)
+    row, result, _chords = result_for_export(request, job_id)
+    payload = {"title": row["title"], "duration": row["duration"], "capo": capo, **result}
+    return Response(json.dumps(payload, ensure_ascii=False, indent=2), media_type="application/json", headers={"Content-Disposition": 'attachment; filename="chordlab-project.json"'})
+
+
+@app.get("/api/jobs/{job_id}/export/pdf")
+def export_pdf(request: Request, job_id: str, capo: int = 0) -> FileResponse:
+    capo = validate_capo(capo)
+    row, result, chords = result_for_export(request, job_id)
+    output = JOBS / job_id / f"chord-sheet-capo-{capo}.pdf"
+    styles = getSampleStyleSheet()
+    embedded_font = ROOT / "vendor" / "fonts" / "NotoSansTC-VF.ttf"
+    if embedded_font.is_file():
+        if "NotoSansTC" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("NotoSansTC", str(embedded_font)))
+        font_name = bold_font_name = "NotoSansTC"
+    else:
+        font_name, bold_font_name = "Helvetica", "Helvetica-Bold"
+    styles["Title"].fontName = bold_font_name
+    styles["BodyText"].fontName = font_name
+    styles["Heading2"].fontName = bold_font_name
+    document = SimpleDocTemplate(str(output), pagesize=A4, rightMargin=14 * mm, leftMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm, title=row["title"])
+    play_key = result.get("key") or detect_key(chords)
+    original_key = play_key.get("label", "Unknown") if play_key else "Unknown"
+    play_key_label = f"{KEY_NAMES[(int(play_key['pitch_class']) - capo) % 12]} {play_key['mode']}" if play_key else "Unknown"
+    story = [Paragraph(row["title"], styles["Title"]), Paragraph(f"ChordLab · {result['active_method']} · Original key: {original_key} · Capo {capo} · Play key: {play_key_label}", styles["BodyText"]), Spacer(1, 7 * mm)]
+    table_data = [["Time", "Chord", "Duration"]]
+    for chord in chords:
+        start = float(chord["start"])
+        table_data.append([f"{int(start // 60):02d}:{start % 60:05.2f}", transpose_chord_label(chord["chord"], -capo), f"{float(chord['end']) - start:.2f}s"])
+    table = Table(table_data, colWidths=[35 * mm, 65 * mm, 35 * mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#16191d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), bold_font_name), ("FONTNAME", (0, 1), (-1, -1), font_name), ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f2f0e9"), colors.white]),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#b5b1a7")), ("PADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(table)
+    lyric_segments = (result.get("lyrics") or {}).get("segments", [])
+    if lyric_segments:
+        lyric_style = ParagraphStyle("Lyrics", parent=styles["BodyText"], fontName=font_name, fontSize=10, leading=15)
+        story.extend([PageBreak(), Paragraph("Timed lyrics / 對時歌詞", styles["Heading2"]), Spacer(1, 4 * mm)])
+        lyric_rows = [["Time", "Play chord", "Lyrics"]]
+        for segment in lyric_segments:
+            start = float(segment.get("start", 0))
+            end = float(segment.get("end", start))
+            overlapping = []
+            for chord in chords:
+                if float(chord["end"]) > start and float(chord["start"]) < end:
+                    played = transpose_chord_label(chord["chord"], -capo)
+                    if played != "N" and played not in overlapping:
+                        overlapping.append(played)
+            timestamp = f"{int(start // 60):02d}:{start % 60:05.2f}"
+            lyric_rows.append([timestamp, " · ".join(overlapping) or "—", Paragraph(html.escape(str(segment.get("text", ""))), lyric_style)])
+        lyric_table = Table(lyric_rows, colWidths=[25 * mm, 38 * mm, 105 * mm], repeatRows=1)
+        lyric_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#16191d")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), bold_font_name), ("FONTNAME", (0, 1), (1, -1), font_name),
+            ("FONTSIZE", (0, 0), (-1, -1), 9), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f2f0e9"), colors.white]),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#b5b1a7")), ("PADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(lyric_table)
+    document.build(story)
+    return FileResponse(output, media_type="application/pdf", filename="chordlab-chords.pdf")

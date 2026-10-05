@@ -1,0 +1,1 @@
+"""ChordLab web application."""
