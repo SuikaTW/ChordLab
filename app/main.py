@@ -20,8 +20,9 @@ import time
 import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Iterator
 from urllib.parse import parse_qs, urlparse
 
 from authlib.integrations.starlette_client import OAuth
@@ -131,12 +132,19 @@ if GOOGLE_ENABLED:
     )
 
 
-def db() -> sqlite3.Connection:
+@contextmanager
+def db() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout=10000")
-    connection.execute("PRAGMA foreign_keys=ON")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=10000")
+        connection.execute("PRAGMA foreign_keys=ON")
+        # sqlite3's own context manager commits/rolls back but does not close.
+        # Close deterministically instead of waiting for cyclic garbage collection.
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def init_db() -> None:
@@ -170,6 +178,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE jobs ADD COLUMN separation_model TEXT NOT NULL DEFAULT 'htdemucs'")
         if "stem_midi" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN stem_midi INTEGER NOT NULL DEFAULT 0")
+        if "pure_guitar" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN pure_guitar INTEGER NOT NULL DEFAULT 0")
         if "transcribe_lyrics" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN transcribe_lyrics INTEGER NOT NULL DEFAULT 0")
         if "source_kind" not in columns:
@@ -429,6 +439,7 @@ def startup() -> None:
             row["separation_model"],
             bool(row["stem_midi"]),
             bool(row["transcribe_lyrics"]),
+            bool(row["pure_guitar"]),
         )
 
 
@@ -1020,7 +1031,7 @@ def get_track_notes(request: Request, job_id: str, track: str) -> dict:
         raise HTTPException(404, "這個音軌沒有音符資料")
     path = job_file(job_id, f"stem-midi/{track}.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return {"source": track, "notes": payload.get("notes", [])}
+    return {"source": track, "notes": payload.get("notes", []), "profile": payload.get("profile", "general")}
 
 
 def update_job(job_id: str, **changes) -> None:
@@ -1103,10 +1114,14 @@ async def create_job(
     separation_model: Annotated[str, Form()] = "htdemucs",
     stem_midi: Annotated[bool, Form()] = False,
     transcribe_lyrics: Annotated[bool, Form()] = False,
+    pure_guitar: Annotated[bool, Form()] = False,
     is_public: Annotated[bool, Form()] = False,
 ) -> dict:
     if bool(url and url.strip()) == bool(file and file.filename):
         raise HTTPException(400, "請選擇網址或音檔其中一種")
+    if pure_guitar:
+        separate_stems = False
+        stem_midi = False
     owner = request.state.identity["sub"]
     with db() as connection:
         active_count = connection.execute(
@@ -1165,16 +1180,18 @@ async def create_job(
                 SELECT id, result FROM jobs
                 WHERE source=? AND source_kind='url' AND status='done' AND is_public=1
                   AND separate_stems=? AND separation_model=?
-                  AND stem_midi>=? AND transcribe_lyrics>=?
+                  AND stem_midi>=? AND transcribe_lyrics>=? AND pure_guitar=?
                 ORDER BY updated_at DESC LIMIT 8
                 """,
-                (source_detail, int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics)),
+                (source_detail, int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(pure_guitar)),
             ).fetchall()
         duplicate = None
         for candidate in candidates:
-            if separation_model == "htdemucs_6s":
+            if pure_guitar or separation_model == "htdemucs_6s":
                 candidate_result = json.loads(candidate["result"] or "{}")
                 if "guitar" not in (candidate_result.get("separation") or {}).get("midi_stems", []):
+                    continue
+                if (candidate_result.get("guitar_tab") or {}).get("profile") != "guitar_v2":
                     continue
             duplicate = candidate
             break
@@ -1198,10 +1215,10 @@ async def create_job(
                     shutil.rmtree(job_dir, ignore_errors=True)
                     raise HTTPException(429, f"你在最近 24 小時已使用 {DAILY_JOB_LIMIT} 次分析額度")
             connection.execute(
-                "INSERT INTO jobs (id,title,source,source_kind,status,progress,message,separate_stems,separation_model,stem_midi,transcribe_lyrics,is_public,public_at,owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (job_id, display_title, source_detail, source, "queued", 2, "等待處理", int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(is_public), now if is_public else None, owner, now, now),
+                "INSERT INTO jobs (id,title,source,source_kind,status,progress,message,separate_stems,separation_model,stem_midi,transcribe_lyrics,pure_guitar,is_public,public_at,owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (job_id, display_title, source_detail, source, "queued", 2, "等待處理", int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(pure_guitar), int(is_public), now if is_public else None, owner, now, now),
             )
-        executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics)
+        executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics, pure_guitar)
     return {"id": job_id, "status": "queued"}
 
 
@@ -1468,6 +1485,7 @@ def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], a
             run_command([
                 str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(source),
                 str(output_dir / f"{stem}.json"), str(output_dir / f"{stem}.mid"),
+                *(["--guitar"] if stem == "guitar" else []),
             ], timeout=1800)
             completed.append(stem)
         except Exception as exc:
@@ -1476,17 +1494,18 @@ def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], a
     return completed, failures
 
 
-def transcribe_guitar_tab(job_id: str, directory: Path) -> tuple[list[str], dict[str, str]]:
+def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | None = None) -> tuple[list[str], dict[str, str]]:
     output_dir = directory / "stem-midi"
     output_dir.mkdir(mode=0o700, exist_ok=True)
-    source = directory / "stems" / "guitar.wav"
+    source = direct_source if direct_source is not None else directory / "stems" / "guitar.wav"
     if not source.is_file():
         return [], {"guitar": "六軌分離未產生吉他音軌"}
-    update_job(job_id, progress=88, message="只分析吉他獨立軌，產生連續 TAB")
+    update_job(job_id, progress=88, message="辨識純吉他原音，產生 TAB" if direct_source is not None else "只分析吉他獨立軌，產生連續 TAB")
     try:
         run_command([
             str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(source),
             str(output_dir / "guitar.json"), str(output_dir / "guitar.mid"),
+            "--guitar",
         ], timeout=1800)
         return ["guitar"], {}
     except Exception as exc:
@@ -1519,6 +1538,7 @@ def process_job(
     separation_model: str = "htdemucs",
     stem_midi: bool = False,
     lyrics_requested: bool = False,
+    pure_guitar: bool = False,
 ) -> None:
     directory = JOBS / job_id
     try:
@@ -1555,7 +1575,10 @@ def process_job(
         basic = json.loads(basic_output.read_text(encoding="utf-8"))
         midi_stems: list[str] = []
         midi_errors: dict[str, str] = {}
-        if separate_stems and stem_midi:
+        if pure_guitar:
+            midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory, direct_source=source)
+            chordino_progress = 94
+        elif separate_stems and stem_midi:
             midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, stem_names, analysis_stem, midi_output)
             chordino_progress = 94
         elif separate_stems and separation_model == "htdemucs_6s":
@@ -1583,6 +1606,10 @@ def process_job(
             "lyrics": lyrics,
             "lyrics_error": lyrics_error,
             "key": detect_key(preferred_chords),
+            "guitar_tab": {
+                "profile": "guitar_v2" if "guitar" in midi_stems else None,
+                "source": "original" if pure_guitar else "separated",
+            },
             "separation": {
                 "enabled": bool(separate_stems),
                 "model": separation_model if separate_stems else None,

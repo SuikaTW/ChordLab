@@ -83,6 +83,25 @@ uv pip install --python .venv-whisper/bin/python -r requirements-whisper.txt
 
 每首歌曲的大型產物儲存在應用程式 checkout 之外。`CHORDLAB_JOBS_DIR` 用來指定工作目錄；設定 `CHORDLAB_STORAGE_MOUNT` 後，資料碟若未掛載，程式會安全地停止啟動，避免誤將資料寫入 SSD。SQLite 資料目錄仍位於 SSD 上的 `data/`。
 
+## 吉他 TAB
+
+完整歌曲請選「只用吉他聲音產生連續 TAB」，先分離六軌。若網址或音檔已是純吉他獨奏／獨立音軌，可改選「來源已是純吉他，直接產生 TAB」，跳過分離並保留原音；含人聲或完整樂團的來源不適合這個選項。
+
+吉他專用轉錄設定保留較短的音符，並提高起音門檻以降低短音誤報。TAB 指法使用多個候選路徑考慮前後音符、和弦跨度與換把，同音連彈會保留為獨立事件。可選標準調弦、Drop D、DADGAD、降半音及降全音，並使用上方 Capo 設定；兩者必須符合演奏來源。調弦設定只影響連續 TAB，和弦按法圖仍使用標準調弦。
+
+既有分析會立即使用新版指法配置，但要重新分析才會重新辨識短音。來源相同但仍使用舊吉他轉錄設定的公開分析不會自動重用。音高轉錄與弦／格數配置仍可能出錯，特別是失真、泛音、多把吉他、分軌失真與特殊奏法；合理且可彈的指法不代表原演奏者的指法。
+
+驗證方式：
+
+```bash
+bin/deno test tests/tab-engine.test.js
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+# 載入與 chordlab.service 相同的環境變數後比較短音訊；不修改既有歌曲
+.venv/bin/python tools/evaluate_guitar_tab.py --audio /absolute/path/to/guitar.wav
+```
+
+評估工具的合成音訊具有已知音符答案，可量測起音／音高配對；真實歌曲若沒有人工對照譜，只能比較輸出的變化，不能從音符數量推算準確率。
+
 ## 限制與安全性
 
 - 網址匯入只允許設定好的公開媒體網域，並會攔截解析到私人或保留 IP 位址的網址。

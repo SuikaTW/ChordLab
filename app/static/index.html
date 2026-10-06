@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=15">
+  <link rel="stylesheet" href="/static/style.css?v=16">
 </head>
 <body>
   <header class="topbar">
@@ -38,6 +38,7 @@
               </div>
               <label class="stem-option lyric-option"><input name="transcribe_lyrics" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>辨識歌詞與時間</b><small>優先使用人聲軌，並把對時歌詞加入 PDF。</small></span></label>
               <label class="stem-option guitar-tab-option"><input id="guitarTabOnly" type="checkbox"><span class="stem-check" aria-hidden="true"></span><span><b>只用吉他聲音產生連續 TAB</b><small>自動啟用六軌分離，不混入其他樂器。</small></span></label>
+              <label class="stem-option guitar-tab-option"><input id="pureGuitar" name="pure_guitar" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>來源已是純吉他，直接產生 TAB</b><small>適合吉他獨奏或獨立音軌；保留原音，不做分軌。完整樂團或含人聲的歌曲請用上面的選項。</small></span></label>
               <label class="public-toggle"><input name="is_public" type="checkbox" value="true"><span><b>公開這次分析</b><small>讓其他人搜尋、收藏，避免重複排隊</small></span></label>
             </div>
           </details>
@@ -110,8 +111,9 @@
 
           <section id="fullTabPanel" class="full-tab-panel result-hidden hidden" data-result-panel="tab">
             <div class="panel-title"><div><p class="eyebrow">GUITAR TAB</p><h3>分段動態六線譜</h3></div><div class="tab-heading-actions"><span id="tabSource" class="save-state"></span><div class="tab-density" aria-label="TAB 顯示密度"><button class="active" data-tab-density="clean">清楚</button><button data-tab-density="full">完整</button></div></div></div>
+            <div class="tab-settings"><label>實際調弦 <select id="tabTuning"><option value="standard">標準 E A D G B e</option><option value="drop_d">Drop D</option><option value="dadgad">DADGAD</option><option value="half_down">降半音</option><option value="whole_down">降全音</option></select></label><span id="tabNoteSummary" role="status"></span></div>
             <div id="tabFlowViewport" class="tab-flow-viewport"><div id="continuousTab" class="continuous-tab"></div></div>
-            <p class="voicing-notes">每行是一段連續時間；橘色框會跟著播放位置移動。數字是格數，空白代表不用彈。</p>
+            <p class="voicing-notes">數字是相對於上方 Capo 的格數；請設定演奏時的調弦與 Capo。指法為推算結果，可能與原演奏不同。清楚模式只濾除極短、極弱的音；完整模式保留更多音符。</p>
           </section>
 
           <section id="lyricsPanel" class="lyrics-panel result-hidden hidden" data-result-panel="lyrics">
@@ -129,6 +131,7 @@
     <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
   </main>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/app.js?v=24" defer></script>
+  <script src="/static/tab-engine.js?v=1" defer></script>
+  <script src="/static/app.js?v=26" defer></script>
 </body>
 </html>

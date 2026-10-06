@@ -83,6 +83,14 @@ Analysis jobs use a persistent FIFO queue. `CHORDLAB_ANALYSIS_WORKERS=1` process
 
 Large per-song artifacts are stored outside the application checkout. `CHORDLAB_JOBS_DIR` selects the job directory and `CHORDLAB_STORAGE_MOUNT` makes startup fail safely instead of writing to the SSD when the data disk is not mounted. The SQLite catalog remains under `data/` on the SSD.
 
+## Guitar TAB
+
+Use the guitar TAB option for six-stem separation of full mixes. For isolated guitar recordings, select the pure-guitar input option to transcribe the original audio without separation. The guitar transcription profile preserves shorter notes with a stricter onset threshold; phrase-level candidate search considers chord spans and position changes, and repeated plucks remain separate events. Standard tuning, Drop D, DADGAD, half-step down, and whole-step down are supported alongside capo settings. Tuning affects continuous TAB only; chord shape diagrams still use standard tuning.
+
+Existing notes use the new fingering search immediately, but need reanalysis for the new short-note profile. Old public guitar transcriptions are excluded from automatic reuse. Estimated fingerings are not guaranteed to reproduce the original performance, and distorted guitars, harmonics, overlapping guitar parts, and separation artifacts remain difficult.
+
+Run `bin/deno test tests/tab-engine.test.js` and `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` for regressions. With the service environment loaded, `tools/evaluate_guitar_tab.py --audio /absolute/path/to/guitar.wav` compares profiles without changing saved songs. The synthetic fixture has reference onsets/pitches; real clips without reference annotations only show output changes, not accuracy.
+
 ## Limits and safety
 
 - URL imports are restricted to the configured public media domains and are checked against private/reserved IP addresses.

@@ -103,13 +103,23 @@ def main() -> None:
     parser.add_argument("audio")
     parser.add_argument("output")
     parser.add_argument("midi")
+    parser.add_argument("--guitar", action="store_true", help="Preserve short guitar plucks and constrain the pitch range")
     args = parser.parse_args()
-    model_output, midi_data, note_events = predict(args.audio)
+    options = {}
+    if args.guitar:
+        options = {
+            "minimum_note_length": 80.0,
+            "onset_threshold": 0.6,
+            "minimum_frequency": 440 * 2 ** ((36 - 69) / 12),
+            "maximum_frequency": 440 * 2 ** ((99 - 69) / 12),
+        }
+    model_output, midi_data, note_events = predict(args.audio, **options)
     del model_output
     midi_data.write(args.midi)
     duration = max((float(event[1]) for event in note_events), default=0.0)
     payload = {
         "engine": "basic_pitch",
+        "profile": "guitar_v2" if args.guitar else "general",
         "duration": round(duration, 3),
         "note_count": len(note_events),
         "notes": [
