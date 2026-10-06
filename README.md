@@ -91,6 +91,7 @@ Large per-song artifacts are stored outside the application checkout. `CHORDLAB_
 - Spotify music links are not downloaded. Upload only audio you are allowed to process.
 - Analysis is probabilistic. Isolated instruments generally produce cleaner Basic Pitch MIDI; Chordino is usually the better first view for a full mix.
 - Source separation can remove masking, but separation artifacts can occasionally make recognition worse. It is opt-in so the same source can be compared with and without it.
+- When two or more tracks are selected on iPhone or iPad, the server renders them into one AAC stream to avoid iOS WebKit multi-player start latency and playback-rate glitches. The first play creates a reusable cache, capped at 24 combinations per job.
 - Per-stem MIDI uses Basic Pitch for pitched stems (vocals, bass, accompaniment, guitar, and piano). Drums remain an audio stem because pitched-note transcription is not a drum-event model.
 - The six-source model is experimental. Demucs upstream specifically warns that the piano stem can contain substantial bleed and artifacts.
 - Key estimation is inferred from the duration-weighted chord track and should be treated as a starting point when a song modulates or the chord recognition is sparse.

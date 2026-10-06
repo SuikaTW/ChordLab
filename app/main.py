@@ -111,6 +111,7 @@ GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 executor = ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS, thread_name_prefix="chordlab")
 heavy_analysis_slot = threading.BoundedSemaphore(1)
 job_submission_lock = threading.Lock()
+mix_generation_lock = threading.Lock()
 login_attempts: dict[str, list[float]] = {}
 login_lock = threading.Lock()
 
@@ -1592,6 +1593,52 @@ def job_file(job_id: str, filename: str) -> Path:
 def audio(request: Request, job_id: str) -> FileResponse:
     accessible_job(request, job_id)
     return FileResponse(job_file(job_id, "audio.wav"), media_type="audio/wav", filename=f"{job_id}.wav")
+
+
+@app.get("/api/jobs/{job_id}/audio-mix")
+def audio_mix(
+    request: Request,
+    job_id: str,
+    tracks: Annotated[str, Query(min_length=3, max_length=120)],
+) -> FileResponse:
+    row = accessible_job(request, job_id)
+    result = json.loads(row["result"]) if row["result"] else {}
+    available = list((result.get("separation") or {}).get("stems") or ["original"])
+    requested = [track.strip() for track in tracks.split(",") if track.strip()]
+    selected = [track for track in available if track in requested]
+    if len(selected) < 2 or len(selected) != len(set(requested)):
+        raise HTTPException(400, "同步混音至少需要兩個有效音軌")
+
+    sources = [
+        job_file(job_id, "audio.wav" if track == "original" else f"stems/{track}.wav")
+        for track in selected
+    ]
+    mix_key = hashlib.sha256("\0".join(selected).encode()).hexdigest()[:16]
+    mixes = JOBS / job_id / "mixes"
+    output = mixes / f"{mix_key}.m4a"
+    if not output.is_file():
+        with mix_generation_lock:
+            if not output.is_file():
+                mixes.mkdir(mode=0o700, exist_ok=True)
+                if sum(1 for path in mixes.glob("*.m4a") if path.is_file()) >= 24:
+                    raise HTTPException(429, "這首歌的 iPhone 同步混音快取已達上限")
+                temporary = mixes / f"{mix_key}.building.m4a"
+                temporary.unlink(missing_ok=True)
+                command = [str(FFMPEG), "-nostdin", "-y"]
+                for source in sources:
+                    command.extend(("-i", str(source)))
+                command.extend((
+                    "-filter_complex",
+                    f"amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95",
+                    "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "192k",
+                    "-threads", "1", "-movflags", "+faststart", str(temporary),
+                ))
+                try:
+                    run_command(command, timeout=600)
+                    temporary.replace(output)
+                finally:
+                    temporary.unlink(missing_ok=True)
+    return FileResponse(output, media_type="audio/mp4")
 
 
 @app.get("/api/jobs/{job_id}/audio/{track}")
