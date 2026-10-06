@@ -10,11 +10,11 @@ Private music-analysis workspace for a single server. It accepts an upload or a 
 
 The browser provides synchronized multi-stem playback/mixing, method comparison, automatic key estimation, a Capo/play-key view, a chord editor, generated guitar voicings/string notes, and PDF, MIDI, ChordPro, and JSON exports.
 
-Continuous TAB never falls back to the full mix. The one-click guitar TAB option enables the experimental six-stem Demucs model and runs note transcription only on its isolated guitar stem. Six-stem jobs always produce guitar MIDI for TAB; the all-stem MIDI option remains separate.
+Continuous TAB never falls back to the full mix. The one-click guitar TAB option enables the experimental six-stem Demucs model and runs note transcription only on its isolated guitar stem. Six-stem jobs always produce guitar MIDI for TAB; the all-stem MIDI option remains separate. TAB is presented in 12-second desktop or 8-second mobile systems; the default Clean view suppresses weaker and very short detected notes, while Full restores every result.
 
 Users may explicitly publish a completed analysis to the shared library. Public analyses are searchable and ranked by unique signed-in viewers or favorites; exact matching public URL jobs with the same analysis options are reused instead of being processed again. Private jobs remain visible only to their owner and administrators.
 
-Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Singing transcription is approximate and may need manual correction.
+Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Short opening songwriter/composer captions hallucinated as lyrics are filtered; singing transcription remains approximate and may need manual correction.
 
 ## Service
 

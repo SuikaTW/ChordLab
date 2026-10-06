@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=14">
+  <link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
   <header class="topbar">
@@ -77,7 +77,7 @@
           </div>
           <audio id="audioPlayer" class="audio-engine" preload="metadata" playsinline></audio>
           <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><small id="analysisTrackLabel"></small></div>
-          <div class="method-row"><div class="method-switch"><button data-method="chordino" class="active">Chordino</button><button data-method="basic_pitch">Basic Pitch</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
+          <div class="method-row"><div class="method-switch"><button data-method="chordino" class="active" title="較適合完整歌曲的和弦辨識">和弦辨識</button><button data-method="basic_pitch" title="從音符推算和弦">音符推算</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats" aria-hidden="true"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
           <details id="stemDownloadsPanel" class="downloads-panel hidden"><summary><span>分軌與 MIDI 下載</span><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></summary><div id="stemDownloads" class="stem-downloads"></div></details>
 
           <nav class="result-tabs" aria-label="分析內容">
@@ -109,9 +109,9 @@
           </div>
 
           <section id="fullTabPanel" class="full-tab-panel result-hidden hidden" data-result-panel="tab">
-            <div class="panel-title"><div><p class="eyebrow">CONTINUOUS TAB</p><h3>連續動態 TAB</h3></div><span id="tabSource" class="save-state"></span></div>
+            <div class="panel-title"><div><p class="eyebrow">GUITAR TAB</p><h3>分段動態六線譜</h3></div><div class="tab-heading-actions"><span id="tabSource" class="save-state"></span><div class="tab-density" aria-label="TAB 顯示密度"><button class="active" data-tab-density="clean">清楚</button><button data-tab-density="full">完整</button></div></div></div>
             <div id="tabFlowViewport" class="tab-flow-viewport"><div id="continuousTab" class="continuous-tab"></div></div>
-            <p class="voicing-notes">只使用分離後的吉他軌，依音高、可用弦與前後把位推算；空白處代表不用彈。</p>
+            <p class="voicing-notes">每行是一段連續時間；橘色框會跟著播放位置移動。數字是格數，空白代表不用彈。</p>
           </section>
 
           <section id="lyricsPanel" class="lyrics-panel result-hidden hidden" data-result-panel="lyrics">
@@ -129,6 +129,6 @@
     <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
   </main>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/app.js?v=23" defer></script>
+  <script src="/static/app.js?v=24" defer></script>
 </body>
 </html>

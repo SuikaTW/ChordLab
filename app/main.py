@@ -484,7 +484,7 @@ def login_page(error: str = "") -> str:
         if GOOGLE_ENABLED
         else '<p class="oauth-pending">Google 登入等待 OAuth 憑證，現在仍可使用原帳密。</p>'
     )
-    return f"""<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"theme-color\" content=\"#f5f3ed\"><title>ChordLab 登入</title><link rel=\"icon\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/style.css?v=14\"></head><body class=\"login-body\"><main class=\"login-card\"><div class=\"brand-mark\">CL</div><p class=\"eyebrow\">YOUR MUSIC, UNPACKED</p><h1>ChordLab</h1><p class=\"muted\">把一首歌整理成可以播放、閱讀與編輯的和弦、吉他 TAB、歌詞和分軌。</p>{error_html}{google_html}<form method=\"post\" action=\"/login\"><label>帳號<input name=\"username\" autocomplete=\"username\" required autofocus></label><label>密碼<input type=\"password\" name=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">進入音樂工作台</button></form></main></body></html>"""
+    return f"""<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"theme-color\" content=\"#f5f3ed\"><title>ChordLab 登入</title><link rel=\"icon\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/style.css?v=15\"></head><body class=\"login-body\"><main class=\"login-card\"><div class=\"brand-mark\">CL</div><p class=\"eyebrow\">YOUR MUSIC, UNPACKED</p><h1>ChordLab</h1><p class=\"muted\">把一首歌整理成可以播放、閱讀與編輯的和弦、吉他 TAB、歌詞和分軌。</p>{error_html}{google_html}<form method=\"post\" action=\"/login\"><label>帳號<input name=\"username\" autocomplete=\"username\" required autofocus></label><label>密碼<input type=\"password\" name=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">進入音樂工作台</button></form></main></body></html>"""
 
 
 @app.get("/auth/google")
@@ -571,11 +571,40 @@ def admin_page(request: Request) -> FileResponse:
     return FileResponse(STATIC / "admin.html")
 
 
+LYRIC_CREDIT_PREFIX = re.compile(
+    r"^(?:作詞|作词|作曲|詞曲|词曲|編曲|编曲|填詞|填词|譜曲|谱曲|演唱|主唱|"
+    r"lyrics?|composer|songwriter)\s*(?:[:：\-—]\s*)?.{1,24}$",
+    re.IGNORECASE,
+)
+LYRIC_KNOWN_HALLUCINATIONS = {"詞曲李宗盛", "词曲李宗盛"}
+
+
+def clean_lyrics_payload(lyrics: dict | None) -> dict | None:
+    """Remove short opening-credit captions that speech models mistake for sung lyrics."""
+    if not isinstance(lyrics, dict):
+        return lyrics
+    cleaned = dict(lyrics)
+    segments = []
+    for index, segment in enumerate(lyrics.get("segments") or []):
+        text = re.sub(r"\s+", " ", str(segment.get("text") or "")).strip()
+        compact = re.sub(r"[\s:：\-—·•]+", "", text)
+        leading_credit = index < 3 and float(segment.get("start") or 0) < 60 and (
+            compact in LYRIC_KNOWN_HALLUCINATIONS
+            or (len(text) <= 30 and bool(LYRIC_CREDIT_PREFIX.fullmatch(text)))
+        )
+        if not text or leading_credit:
+            continue
+        segments.append(dict(segment) | {"text": text})
+    cleaned["segments"] = segments
+    return cleaned
+
+
 def serialize_job(row: sqlite3.Row, include_result: bool = True) -> dict:
     payload = dict(row)
     if include_result:
         payload["result"] = json.loads(payload["result"]) if payload.get("result") else None
         if payload["result"]:
+            payload["result"]["lyrics"] = clean_lyrics_payload(payload["result"].get("lyrics"))
             method = payload["result"].get("active_method", "chordino")
             methods = payload["result"].get("methods", {})
             selected = methods.get(method, [])
@@ -1452,7 +1481,9 @@ def transcribe_lyrics(job_id: str, audio: Path, directory: Path) -> dict:
         str(WHISPER_PYTHON), str(ROOT / "tools" / "lyrics_worker.py"), str(audio), str(output),
         "--model", model, "--cache", str(cache),
     ], timeout=7200)
-    return json.loads(output.read_text(encoding="utf-8"))
+    lyrics = clean_lyrics_payload(json.loads(output.read_text(encoding="utf-8"))) or {"segments": []}
+    output.write_text(json.dumps(lyrics, ensure_ascii=False), encoding="utf-8")
+    return lyrics
 
 
 def process_job(
