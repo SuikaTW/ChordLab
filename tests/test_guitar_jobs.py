@@ -24,6 +24,7 @@ class GuitarJobTests(unittest.TestCase):
             patch.object(main, "SECRET", "guitar-test-secret-" * 3),
             patch.object(main, "ensure_public_url", side_effect=lambda value: value),
             patch.object(main.executor, "submit"),
+            patch.object(main, "schedule_download"),
         ]
         for p in self.patches:
             p.start()
@@ -80,6 +81,8 @@ class GuitarJobTests(unittest.TestCase):
                 Path(command[3]).write_text(json.dumps({"notes": [], "chords": [], "note_count": 0}))
             elif any("chordino_worker.py" in arg for arg in command):
                 Path(command[3]).write_text(json.dumps({"chords": []}))
+            elif any("rhythm_worker.py" in arg for arg in command):
+                Path(command[3]).write_text(json.dumps({"bpm": 120, "beats": []}))
 
         with patch.object(main, "download_url", return_value=(original, "test")), \
              patch.object(main, "normalize_audio", return_value=9.0), \
@@ -93,7 +96,7 @@ class GuitarJobTests(unittest.TestCase):
             row = connection.execute("SELECT status,result FROM jobs WHERE id=?", (job_id,)).fetchone()
         self.assertEqual(row["status"], "done")
         result = json.loads(row["result"])
-        self.assertEqual(result["guitar_tab"], {"profile": "guitar_v2", "source": "original"})
+        self.assertEqual(result["guitar_tab"], {"profile": "guitar_v2", "source": "original", "status": "done"})
         self.assertIn("guitar", result["separation"]["midi_stems"])
 
     def test_separated_pipeline_skips_weak_tracks_before_midi(self):
@@ -110,6 +113,8 @@ class GuitarJobTests(unittest.TestCase):
                 Path(command[3]).write_text(json.dumps({"notes": [], "chords": [], "note_count": 0}))
             elif any("chordino_worker.py" in arg for arg in command):
                 Path(command[3]).write_text(json.dumps({"chords": []}))
+            elif any("rhythm_worker.py" in arg for arg in command):
+                Path(command[3]).write_text(json.dumps({"bpm": 120, "beats": []}))
 
         with patch.object(main, "normalize_audio", return_value=9.0), \
              patch.object(main, "run_command", side_effect=fake_command), \
@@ -135,6 +140,37 @@ class GuitarJobTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/jobs/hidden-track/audio/piano").status_code, 200)
         self.assertEqual(self.client.get("/api/jobs/hidden-track/audio/unknown").status_code, 404)
         self.assertEqual(self.client.get("/api/jobs/hidden-track/audio-mix?tracks=original,unknown").status_code, 400)
+
+    def test_review_mode_is_persisted_and_passed_to_queue(self):
+        response = self.client.post("/api/jobs", data={"url": "https://youtu.be/9GIRqZfa1Gg", "separate_stems": "true",
+                                   "separation_model": "htdemucs_6s", "review_guitar": "true"}, headers={"Origin": "http://testserver"})
+        self.assertEqual(response.status_code, 202)
+        with main.db() as c:
+            self.assertEqual(c.execute("SELECT review_guitar FROM jobs WHERE id=?", (response.json()["id"],)).fetchone()[0], 1)
+        self.assertTrue(main.executor.submit.call_args.kwargs["review_guitar"])
+
+    def test_review_pipeline_defers_guitar_transcription(self):
+        job_id = "review-pipeline"
+        directory = self.jobs / job_id
+        directory.mkdir()
+        source = directory / "source.wav"
+        source.touch()
+        with main.db() as c:
+            c.execute("INSERT INTO jobs(id,title,source,status,created_at,updated_at) VALUES (?,?,?,'queued',1,1)", (job_id, "test", "test"))
+        def fake_command(command, **kwargs):
+            if any("worker.py" in arg for arg in command):
+                Path(command[3]).write_text(json.dumps({"notes": [], "chords": [], "note_count": 0, "bpm": 120, "beats": []}))
+        with patch.object(main, "normalize_audio", return_value=9.0), \
+             patch.object(main, "run_command", side_effect=fake_command), \
+             patch.object(main, "detect_activity", return_value={}), \
+             patch.object(main, "separate_audio", return_value=(source, ["original", "harmony", "guitar"])), \
+             patch.object(main, "transcribe_guitar_tab") as guitar:
+            main.process_job(job_id, "upload", "test", separate_stems=True, separation_model="htdemucs_6s", review_guitar=True)
+            guitar.assert_not_called()
+        with main.db() as c:
+            row = c.execute("SELECT result,status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        self.assertEqual(row["status"], "done")
+        self.assertEqual(json.loads(row["result"])["guitar_tab"]["status"], "pending")
 
 
 if __name__ == "__main__":

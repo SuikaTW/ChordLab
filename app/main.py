@@ -39,6 +39,10 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from starlette.middleware.sessions import SessionMiddleware
 from app.stem_activity import detect_activity
+from app.light_tasks import LightTaskPool, PoolBusy
+from app.preparation import DownloadPreparation
+from app.tab_models import TabDocument
+from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -113,6 +117,8 @@ GOOGLE_ADMIN_EMAILS = {
 }
 GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 executor = ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS, thread_name_prefix="chordlab")
+light_tasks = LightTaskPool()
+download_preparation = DownloadPreparation()
 heavy_analysis_slot = threading.BoundedSemaphore(1)
 job_submission_lock = threading.Lock()
 mix_generation_lock = threading.Lock()
@@ -240,6 +246,16 @@ def init_db() -> None:
             """
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at, id)")
+        if "review_guitar" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN review_guitar INTEGER NOT NULL DEFAULT 0")
+        connection.execute("""CREATE TABLE IF NOT EXISTS user_tabs (
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            viewer TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL,
+            updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, viewer))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS guitar_tasks (
+            job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner_status ON jobs(owner, status)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_public_status ON jobs(is_public, status, public_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_job_views_rank ON job_views(job_id, viewed_at)")
@@ -382,7 +398,7 @@ async def authentication(request: Request, call_next):
             if request.url.path.startswith("/api/"):
                 return JSONResponse({"detail": "請先登入"}, status_code=401)
             return RedirectResponse("/login", status_code=303)
-        user = touch_user(identity)
+        user = await run_in_threadpool(touch_user, identity)
         if user["is_blocked"]:
             if request.url.path.startswith("/api/"):
                 response = JSONResponse({"detail": "此帳號已被管理員停權"}, status_code=403)
@@ -430,18 +446,19 @@ def startup() -> None:
     with db() as connection:
         connection.execute("UPDATE jobs SET status='queued', progress=2, message='服務重啟，已重新加入佇列' WHERE status='working'")
         pending = connection.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id").fetchall()
-    for row in pending:
-        executor.submit(
-            process_job,
-            row["id"],
-            row["source_kind"],
-            row["source"],
-            bool(row["separate_stems"]),
-            row["separation_model"],
-            bool(row["stem_midi"]),
-            bool(row["transcribe_lyrics"]),
-            bool(row["pure_guitar"]),
-        )
+    with db() as connection:
+        connection.execute("UPDATE guitar_tasks SET status='queued' WHERE status='working'")
+        guitar_pending = connection.execute("SELECT job_id,created_at FROM guitar_tasks WHERE status='queued'").fetchall()
+    ordered = [(row["created_at"], row["id"], "song", row) for row in pending] + [(row["created_at"], row["job_id"], "tab", row) for row in guitar_pending]
+    for _created, _id, kind, row in sorted(ordered, key=lambda item: (item[0], item[1])):
+        if kind == "tab":
+            executor.submit(process_guitar_task, row["job_id"])
+        else:
+            if row["source_kind"] == "url":
+                schedule_download(row["id"], row["source"])
+            executor.submit(process_job, row["id"], row["source_kind"], row["source"],
+                            bool(row["separate_stems"]), row["separation_model"], bool(row["stem_midi"]),
+                            bool(row["transcribe_lyrics"]), bool(row["pure_guitar"]), review_guitar=bool(row["review_guitar"]))
 
 
 @app.get("/healthz")
@@ -635,9 +652,12 @@ def serialize_job(row: sqlite3.Row, include_result: bool = True) -> dict:
 
 
 def add_queue_metadata(connection: sqlite3.Connection, payloads: list[dict]) -> None:
-    queued = connection.execute("SELECT id FROM jobs WHERE status='queued' ORDER BY created_at, id").fetchall()
+    queued = connection.execute("""SELECT id FROM (
+        SELECT id,created_at FROM jobs WHERE status='queued'
+        UNION ALL SELECT 'tab:'||job_id AS id,created_at FROM guitar_tasks WHERE status='queued'
+        ) ORDER BY created_at,id""").fetchall()
     positions = {row["id"]: index for index, row in enumerate(queued, start=1)}
-    active_jobs = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='working'").fetchone()[0]
+    active_jobs = connection.execute("SELECT (SELECT COUNT(*) FROM jobs WHERE status='working') + (SELECT COUNT(*) FROM guitar_tasks WHERE status='working')").fetchone()[0]
     for payload in payloads:
         payload["queue_position"] = positions.get(payload["id"])
         payload["analysis_workers"] = ANALYSIS_WORKERS
@@ -650,8 +670,8 @@ def add_queue_metadata(connection: sqlite3.Connection, payloads: list[dict]) -> 
 @app.get("/api/queue")
 def queue_status() -> dict:
     with db() as connection:
-        working = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='working'").fetchone()[0]
-        waiting = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
+        working = connection.execute("SELECT (SELECT COUNT(*) FROM jobs WHERE status='working') + (SELECT COUNT(*) FROM guitar_tasks WHERE status='working')").fetchone()[0]
+        waiting = connection.execute("SELECT (SELECT COUNT(*) FROM jobs WHERE status='queued') + (SELECT COUNT(*) FROM guitar_tasks WHERE status='queued')").fetchone()[0]
     return {"working": working, "waiting": waiting, "total": working + waiting, "workers": ANALYSIS_WORKERS}
 
 
@@ -690,9 +710,11 @@ def editable_job(request: Request, job_id: str) -> sqlite3.Row:
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(request: Request, job_id: str) -> dict:
+def get_job(request: Request, job_id: str, include_notes: bool = True) -> dict:
     row = accessible_job(request, job_id)
     payload = serialize_job(row)
+    if not include_notes and payload.get("result"):
+        payload["result"].pop("notes", None)
     payload["mine"] = payload["owner"] == request.state.identity["sub"]
     if not payload["mine"] and not is_admin(request.state.identity):
         payload.pop("owner", None)
@@ -750,7 +772,7 @@ def list_public_jobs(
 
 
 @app.get("/api/public/jobs/{job_id}")
-def get_public_job(request: Request, job_id: str) -> dict:
+def get_public_job(request: Request, job_id: str, include_notes: bool = True) -> dict:
     viewer = request.state.identity["sub"]
     with db() as connection:
         row = connection.execute(
@@ -768,6 +790,8 @@ def get_public_job(request: Request, job_id: str) -> dict:
             "SELECT 1 FROM job_favorites WHERE job_id=? AND owner=?", (job_id, viewer)
         ).fetchone()
     payload = serialize_job(row)
+    if not include_notes and payload.get("result"):
+        payload["result"].pop("notes", None)
     payload["mine"] = row["owner"] == viewer
     payload["view_count"] = view_count
     payload["favorite_count"] = favorite_count
@@ -975,14 +999,21 @@ def admin_job_visibility(request: Request, job_id: str, update: AdminVisibilityU
 
 @app.delete("/api/admin/jobs/{job_id}")
 def admin_delete_job(request: Request, job_id: str, update: AdminDeleteJob) -> dict:
+    # Keep the status check and deletion atomic relative to new TAB submissions.
+    with job_submission_lock:
+        return delete_admin_job_locked(request, job_id, update)
+
+
+def delete_admin_job_locked(request: Request, job_id: str, update: AdminDeleteJob) -> dict:
     actor = require_admin(request)
     if not re.fullmatch(r"[0-9a-f]{32}", job_id) or not hmac.compare_digest(update.confirm, job_id):
         raise HTTPException(400, "刪除確認不符")
     with db() as connection:
         row = connection.execute("SELECT id,title,status,owner FROM jobs WHERE id=?", (job_id,)).fetchone()
+        guitar_task = connection.execute("SELECT status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
     if not row:
         raise HTTPException(404, "找不到分析工作")
-    if row["status"] in {"queued", "working"}:
+    if row["status"] in {"queued", "working"} or guitar_task and guitar_task["status"] in {"queued", "working"}:
         raise HTTPException(409, "不能刪除排隊中或處理中的工作")
     source_dir = JOBS / job_id
     trash_root = JOBS / ".admin-trash"
@@ -1033,6 +1064,108 @@ def get_track_notes(request: Request, job_id: str, track: str) -> dict:
     path = job_file(job_id, f"stem-midi/{track}.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
     return {"source": track, "notes": payload.get("notes", []), "profile": payload.get("profile", "general")}
+
+
+@app.get("/api/jobs/{job_id}/tab")
+def get_personal_tab(request: Request, job_id: str) -> dict:
+    accessible_job(request, job_id)
+    with db() as connection:
+        row = connection.execute("SELECT document,revision FROM user_tabs WHERE job_id=? AND viewer=?",
+                                 (job_id, identity_key(request.state.identity))).fetchone()
+    return {"document": json.loads(row["document"]) if row else None, "revision": row["revision"] if row else 0}
+
+
+@app.put("/api/jobs/{job_id}/tab")
+def save_personal_tab(request: Request, job_id: str, document: TabDocument) -> dict:
+    job = accessible_job(request, job_id)
+    if job["status"] != "done":
+        raise HTTPException(409, "請等分析完成")
+    if any(note.end > float(job["duration"] or MAX_DURATION) + .5 for note in document.notes):
+        raise HTTPException(400, "音符超過歌曲長度")
+    key = identity_key(request.state.identity)
+    with db() as connection:
+        # Acquire the write lock before checking revision, avoiding lost updates.
+        connection.execute("BEGIN IMMEDIATE")
+        if not connection.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,)).fetchone():
+            raise HTTPException(404, "此分析已被刪除")
+        existing = connection.execute("SELECT revision FROM user_tabs WHERE job_id=? AND viewer=?", (job_id, key)).fetchone()
+        revision = existing["revision"] if existing else 0
+        if document.revision != revision:
+            raise HTTPException(409, "另一個分頁已更新此譜，請重新載入後再編輯")
+        payload = document.model_dump()
+        payload["revision"] = revision + 1
+        connection.execute("""INSERT INTO user_tabs(job_id,viewer,revision,document,updated_at) VALUES (?,?,?,?,?)
+            ON CONFLICT(job_id,viewer) DO UPDATE SET revision=excluded.revision,
+            document=excluded.document,updated_at=excluded.updated_at""",
+                           (job_id, key, revision + 1, json.dumps(payload), int(time.time())))
+    return {"document": payload, "revision": revision + 1}
+
+
+@app.get("/api/jobs/{job_id}/guitar-analysis")
+def guitar_task_status(request: Request, job_id: str) -> dict:
+    row = accessible_job(request, job_id)
+    with db() as connection:
+        task = connection.execute("SELECT status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
+    result = json.loads(row["result"] or "{}")
+    return {"status": task["status"] if task else (result.get("guitar_tab") or {}).get("status", "done" if "guitar" in (result.get("separation") or {}).get("midi_stems", []) else "unavailable")}
+
+
+@app.post("/api/jobs/{job_id}/guitar-analysis", status_code=202)
+def start_guitar_task(request: Request, job_id: str) -> dict:
+    row = editable_job(request, job_id)
+    result = json.loads(row["result"] or "{}")
+    separation = result.get("separation") or {}
+    if row["status"] != "done" or "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
+        raise HTTPException(400, "這首歌沒有可分析的吉他分軌")
+    if "guitar" in separation.get("midi_stems", []):
+        return {"status": "done"}
+    job_file(job_id, "stems/guitar.wav")
+    with job_submission_lock:
+        with db() as connection:
+            task = connection.execute("SELECT * FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
+            if task and task["status"] in {"queued", "working", "done"}:
+                return {"status": task["status"]}
+            if task and task["attempts"] >= 3:
+                raise HTTPException(429, "已重試三次，請聯絡管理員")
+            active = connection.execute("""SELECT
+                (SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')) +
+                (SELECT COUNT(*) FROM guitar_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.owner=? AND t.status IN ('queued','working'))""", (row["owner"], row["owner"])).fetchone()[0]
+            if active >= MAX_ACTIVE_PER_USER:
+                raise HTTPException(429, "你的分析工作已達上限，請等待前一個完成")
+            if not is_admin(request.state.identity):
+                recent = connection.execute("SELECT COUNT(*) FROM guitar_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.owner=? AND t.created_at>=?", (row["owner"], int(time.time()) - 86400)).fetchone()[0]
+                if recent >= DAILY_JOB_LIMIT:
+                    raise HTTPException(429, "今日 TAB 轉錄額度已用完")
+            now = int(time.time())
+            connection.execute("""INSERT INTO guitar_tasks(job_id,status,created_at,updated_at) VALUES (?,'queued',?,?)
+                ON CONFLICT(job_id) DO UPDATE SET status='queued',attempts=attempts+1,updated_at=excluded.updated_at""", (job_id, now, now))
+        executor.submit(process_guitar_task, job_id)
+    return {"status": "queued"}
+
+
+def process_guitar_task(job_id: str) -> None:
+    with db() as connection:
+        connection.execute("UPDATE guitar_tasks SET status='working',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
+    try:
+        stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id)
+        status = "done" if "guitar" in stems else "failed"
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row:
+                result = json.loads(row["result"] or "{}")
+                separation = result.setdefault("separation", {})
+                separation["midi_stems"] = list(dict.fromkeys([*separation.get("midi_stems", []), *stems]))
+                separation.setdefault("midi_errors", {}).update(errors)
+                if status == "done":
+                    separation["midi_errors"].pop("guitar", None)
+                result["guitar_tab"] = {"profile": "guitar_v2" if status == "done" else None, "source": "separated", "status": status}
+                connection.execute("UPDATE jobs SET result=?,progress=100,message='分析完成',updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
+            connection.execute("UPDATE guitar_tasks SET status=?,updated_at=? WHERE job_id=?", (status, int(time.time()), job_id))
+    except Exception as exc:
+        log_job_error(job_id, "guitar-task", exc)
+        with db() as connection:
+            connection.execute("UPDATE guitar_tasks SET status='failed',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
 
 
 def update_job(job_id: str, **changes) -> None:
@@ -1116,6 +1249,7 @@ async def create_job(
     stem_midi: Annotated[bool, Form()] = False,
     transcribe_lyrics: Annotated[bool, Form()] = False,
     pure_guitar: Annotated[bool, Form()] = False,
+    review_guitar: Annotated[bool, Form()] = False,
     is_public: Annotated[bool, Form()] = False,
 ) -> dict:
     if bool(url and url.strip()) == bool(file and file.filename):
@@ -1125,9 +1259,7 @@ async def create_job(
         stem_midi = False
     owner = request.state.identity["sub"]
     with db() as connection:
-        active_count = connection.execute(
-            "SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')", (owner,)
-        ).fetchone()[0]
+        active_count = active_jobs_for_owner(connection, owner)
     if active_count >= MAX_ACTIVE_PER_USER:
         raise HTTPException(429, f"你已有 {MAX_ACTIVE_PER_USER} 個工作正在處理或排隊，請完成後再加入")
     job_id = uuid.uuid4().hex
@@ -1149,7 +1281,7 @@ async def create_job(
                         raise HTTPException(413, "檔案超過大小限制")
                     target.write(chunk)
             incoming.chmod(0o600)
-            validate_uploaded_media(incoming)
+            await run_in_threadpool(validate_uploaded_media, incoming)
         except HTTPException:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
@@ -1163,7 +1295,7 @@ async def create_job(
     else:
         source = "url"
         try:
-            source_detail = ensure_public_url(url or "")
+            source_detail = await run_in_threadpool(ensure_public_url, url or "")
         except HTTPException:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
@@ -1202,9 +1334,7 @@ async def create_job(
     now = int(time.time())
     with job_submission_lock:
         with db() as connection:
-            active_count = connection.execute(
-                "SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')", (owner,)
-            ).fetchone()[0]
+            active_count = active_jobs_for_owner(connection, owner)
             if active_count >= MAX_ACTIVE_PER_USER:
                 shutil.rmtree(job_dir, ignore_errors=True)
                 raise HTTPException(429, f"你已有 {MAX_ACTIVE_PER_USER} 個工作正在處理或排隊，請完成後再加入")
@@ -1219,7 +1349,10 @@ async def create_job(
                 "INSERT INTO jobs (id,title,source,source_kind,status,progress,message,separate_stems,separation_model,stem_midi,transcribe_lyrics,pure_guitar,is_public,public_at,owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (job_id, display_title, source_detail, source, "queued", 2, "等待處理", int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(pure_guitar), int(is_public), now if is_public else None, owner, now, now),
             )
-        executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics, pure_guitar)
+            connection.execute("UPDATE jobs SET review_guitar=? WHERE id=?", (int(review_guitar), job_id))
+        if source == "url":
+            schedule_download(job_id, source_detail)
+        executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics, pure_guitar, review_guitar=review_guitar)
     return {"id": job_id, "status": "queued"}
 
 
@@ -1233,6 +1366,8 @@ def command_environment(overrides: dict | None = None) -> dict[str, str]:
         # Bubblewrap mounts a fresh private tmpfs at /tmp for every child process.
         "NUMBA_CACHE_DIR": "/tmp/numba",  # nosec B108
         "MPLCONFIGDIR": "/tmp/matplotlib",  # nosec B108
+        "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
+        "TF_NUM_INTRAOP_THREADS": "2", "TF_NUM_INTEROP_THREADS": "1",
     })
     if overrides:
         environment.update(overrides)
@@ -1432,6 +1567,18 @@ def download_url(job_id: str, url: str, directory: Path) -> tuple[Path, str]:
     return candidates[0], title
 
 
+def schedule_download(job_id: str, url: str) -> None:
+    # Optional prefetch. Saturated preparation falls back to the existing queue,
+    # without rejecting a valid submitted analysis or accumulating unlimited RAM.
+    download_preparation.submit(job_id, download_url, job_id, url, JOBS / job_id)
+
+
+def active_jobs_for_owner(connection: sqlite3.Connection, owner: str) -> int:
+    return connection.execute("""SELECT
+        (SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')) +
+        (SELECT COUNT(*) FROM guitar_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.owner=? AND t.status IN ('queued','working'))""", (owner, owner)).fetchone()[0]
+
+
 KEY_NAMES = ("C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 KEY_ROOTS = {"C": 0, "B#": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "Fb": 4,
              "E#": 5, "F": 5, "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10,
@@ -1470,7 +1617,7 @@ def detect_key(chords: list[dict]) -> dict | None:
 
 def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], analysis_stem: str, midi_output: Path) -> tuple[list[str], dict[str, str]]:
     output_dir = directory / "stem-midi"
-    output_dir.mkdir(mode=0o700)
+    output_dir.mkdir(mode=0o700, exist_ok=True)
     completed: list[str] = []
     failures: dict[str, str] = {}
     if analysis_stem in stem_names:
@@ -1540,12 +1687,14 @@ def process_job(
     stem_midi: bool = False,
     lyrics_requested: bool = False,
     pure_guitar: bool = False,
+    review_guitar: bool = False,
 ) -> None:
     directory = JOBS / job_id
     try:
         update_job(job_id, status="working", progress=5, message="準備音訊")
         if source_kind == "url":
-            source, _title = download_url(job_id, source_detail, directory)
+            prepared = download_preparation.take(job_id)
+            source, _title = prepared.result() if prepared is not None else download_url(job_id, source_detail, directory)
         else:
             source = next(directory.glob("source.*"))
         audio = directory / "audio.wav"
@@ -1583,9 +1732,10 @@ def process_job(
             midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory, direct_source=source)
             chordino_progress = 94
         elif separate_stems and stem_midi:
-            midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, stem_names, analysis_stem, midi_output)
+            midi_names = [name for name in stem_names if not (review_guitar and name == "guitar")]
+            midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, midi_names, analysis_stem, midi_output)
             chordino_progress = 94
-        elif separate_stems and separation_model == "htdemucs_6s" and "guitar" in stem_names:
+        elif separate_stems and separation_model == "htdemucs_6s" and "guitar" in stem_names and not review_guitar:
             midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory)
             chordino_progress = 94
         update_job(job_id, note_count=basic.get("note_count", 0), progress=chordino_progress, message="Chordino 辨識和弦與分析 Key")
@@ -1601,6 +1751,14 @@ def process_job(
             chordino_chords = []
             chordino_error = "Chordino 辨識失敗"
         chordino_usable = any(segment.get("chord") != "N" for segment in chordino_chords)
+        rhythm = None
+        try:
+            rhythm_output = directory / "rhythm.json"
+            rhythm_audio = directory / "stems" / "drums.wav" if "drums" in stem_names else audio
+            run_command([str(BASIC_PYTHON), str(ROOT / "tools" / "rhythm_worker.py"), str(rhythm_audio), str(rhythm_output)], timeout=300)
+            rhythm = json.loads(rhythm_output.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log_job_error(job_id, "rhythm", exc)
         preferred_chords = chordino_chords if chordino_usable else basic.get("chords", [])
         result = {
             "active_method": "chordino" if chordino_usable else "basic_pitch",
@@ -1610,9 +1768,11 @@ def process_job(
             "lyrics": lyrics,
             "lyrics_error": lyrics_error,
             "key": detect_key(preferred_chords),
+            "rhythm": rhythm,
             "guitar_tab": {
                 "profile": "guitar_v2" if "guitar" in midi_stems else None,
                 "source": "original" if pure_guitar else "separated",
+                "status": "done" if "guitar" in midi_stems else ("pending" if review_guitar and "guitar" in stem_names else "unavailable"),
             },
             "separation": {
                 "enabled": bool(separate_stems),
@@ -1663,11 +1823,16 @@ def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
             raise HTTPException(400, "和弦時間範圍錯誤")
         if index and segment["start"] < chords[index - 1]["start"]:
             raise HTTPException(400, "和弦順序錯誤")
-    result = json.loads(row["result"])
-    result["methods"][update.method] = chords
-    result["active_method"] = update.method
-    result["key"] = detect_key(chords)
-    update_job(job_id, result=json.dumps(result, ensure_ascii=False), message="已儲存人工修正")
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        latest = connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not latest:
+            raise HTTPException(404, "找不到可編輯結果")
+        result = json.loads(latest["result"])
+        result["methods"][update.method] = chords
+        result["active_method"] = update.method
+        result["key"] = detect_key(chords)
+        connection.execute("UPDATE jobs SET result=?,message='已儲存人工修正',updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
     return {"ok": True}
 
 
@@ -1685,7 +1850,7 @@ def audio(request: Request, job_id: str) -> FileResponse:
 
 
 @app.get("/api/jobs/{job_id}/audio-mix")
-def audio_mix(
+async def audio_mix(
     request: Request,
     job_id: str,
     tracks: Annotated[str, Query(min_length=3, max_length=120)],
@@ -1698,6 +1863,18 @@ def audio_mix(
     selected = [track for track in available if track in requested]
     if len(selected) < 2 or len(selected) != len(set(requested)):
         raise HTTPException(400, "同步混音至少需要兩個有效音軌")
+
+    mix_key = hashlib.sha256("\0".join(selected).encode()).hexdigest()[:16]
+    cached = JOBS / job_id / "mixes" / f"{mix_key}.m4a"
+    if cached.is_file():
+        return FileResponse(cached, media_type="audio/mp4")
+    try:
+        return await light_tasks.run(build_audio_mix, job_id, selected)
+    except PoolBusy as exc:
+        raise HTTPException(429, str(exc)) from exc
+
+
+def build_audio_mix(job_id: str, selected: list[str]) -> FileResponse:
 
     sources = [
         job_file(job_id, "audio.wav" if track == "original" else f"stems/{track}.wav")
@@ -1718,7 +1895,7 @@ def audio_mix(
                 for source in sources:
                     command.extend(("-i", str(source)))
                 command.extend((
-                    "-filter_complex",
+                    "-filter_complex_threads", "1", "-filter_complex",
                     f"amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95",
                     "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "192k",
                     "-threads", "1", "-movflags", "+faststart", str(temporary),
@@ -1728,6 +1905,38 @@ def audio_mix(
                     temporary.replace(output)
                 finally:
                     temporary.unlink(missing_ok=True)
+    return FileResponse(output, media_type="audio/mp4")
+
+
+@app.get("/api/jobs/{job_id}/guitar-preview")
+async def guitar_preview(request: Request, job_id: str, start: Annotated[float, Query(ge=0, le=1200, allow_inf_nan=False)] = 0) -> FileResponse:
+    row = accessible_job(request, job_id)
+    result = json.loads(row["result"] or "{}")
+    original = (result.get("guitar_tab") or {}).get("source") == "original"
+    separation = result.get("separation") or {}
+    if not original and "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
+        raise HTTPException(404, "沒有吉他音軌")
+    source = job_file(job_id, "audio.wav" if original else "stems/guitar.wav")
+    start = int(min(start, max(0, float(row["duration"] or 20) - 1)) // 20 * 20)
+    cached = JOBS / job_id / f"guitar-preview-{start}.m4a"
+    if cached.is_file():
+        return FileResponse(cached, media_type="audio/mp4")
+    try:
+        return await light_tasks.run(build_guitar_preview, job_id, source, start)
+    except PoolBusy as exc:
+        raise HTTPException(429, str(exc)) from exc
+
+
+def build_guitar_preview(job_id: str, source: Path, start: int) -> FileResponse:
+    output = JOBS / job_id / f"guitar-preview-{start}.m4a"
+    with mix_generation_lock:
+        if not output.is_file():
+            temporary = output.with_suffix(".building.m4a")
+            try:
+                run_command([str(FFMPEG), "-nostdin", "-y", "-ss", str(start), "-i", str(source), "-t", "20", "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "128k", "-threads", "1", "-movflags", "+faststart", str(temporary)], timeout=45)
+                temporary.replace(output)
+            finally:
+                temporary.unlink(missing_ok=True)
     return FileResponse(output, media_type="audio/mp4")
 
 
@@ -1744,6 +1953,38 @@ def audio_track(request: Request, job_id: str, track: str) -> FileResponse:
     else:
         path = job_file(job_id, f"stems/{track}.wav")
     return FileResponse(path, media_type="audio/wav", filename=f"{track}.wav")
+
+
+@app.get("/api/jobs/{job_id}/audio-stream/{track}")
+async def audio_stream(request: Request, job_id: str, track: str) -> FileResponse:
+    row = accessible_job(request, job_id)
+    result = json.loads(row["result"] or "{}")
+    separation = result.get("separation") or {}
+    if track not in (separation.get("all_stems") or separation.get("stems") or ["original"]):
+        raise HTTPException(404, "未知的音軌")
+    source = job_file(job_id, "audio.wav" if track == "original" else f"stems/{track}.wav")
+    cached = JOBS / job_id / "streams" / f"{track}.m4a"
+    if cached.is_file():
+        return FileResponse(cached, media_type="audio/mp4")
+    try:
+        return await light_tasks.run(build_audio_stream, job_id, source, track)
+    except PoolBusy as exc:
+        raise HTTPException(429, str(exc)) from exc
+
+
+def build_audio_stream(job_id: str, source: Path, track: str) -> FileResponse:
+    directory = JOBS / job_id / "streams"
+    output = directory / f"{track}.m4a"
+    with mix_generation_lock:
+        if not output.is_file():
+            directory.mkdir(mode=0o700, exist_ok=True)
+            temporary = output.with_suffix(".building.m4a")
+            try:
+                run_command([str(FFMPEG), "-nostdin", "-y", "-i", str(source), "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "192k", "-threads", "1", "-movflags", "+faststart", str(temporary)], timeout=120)
+                temporary.replace(output)
+            finally:
+                temporary.unlink(missing_ok=True)
+    return FileResponse(output, media_type="audio/mp4")
 
 
 def result_for_export(request: Request, job_id: str) -> tuple[sqlite3.Row, dict, list[dict]]:

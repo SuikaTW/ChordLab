@@ -1,8 +1,8 @@
-importScripts('/static/tab-engine.js?v=2');
-self.onmessage = event => {
+importScripts("/static/tab-engine.js?v=4");
+self.onmessage = (event) => {
   try {
-    self.postMessage({result: ChordLabTab.assign(event.data.notes, event.data.options)});
+    self.postMessage({ result: ChordLabTab.assign(event.data.notes, event.data.options) });
   } catch {
-    self.postMessage({error: '無法配置吉他指法，請重新開啟這首歌'});
+    self.postMessage({ error: "無法配置吉他指法，請重新開啟這首歌" });
   }
 };

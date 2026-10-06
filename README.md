@@ -1,5 +1,12 @@
 # ChordLab
 
+The practice workspace includes private, account-scoped TAB editing, guitar-stem
+preview before optional transcription, estimated beat/bar layout with manual
+correction, windowed TAB rendering, and separate bounded download/media pools.
+Audio pitch and rhythm estimates do not identify the original played strings,
+separate acoustic/electric guitars, or reliably identify downbeats/time signatures.
+See [中文說明](README.zh-TW.md) for workflow, persistence, limits, and evaluation.
+
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
 Private music-analysis workspace for a single server. It accepts an upload or a supported public media URL, normalizes the audio, and runs two independent analysis paths:
@@ -10,7 +17,7 @@ Private music-analysis workspace for a single server. It accepts an upload or a 
 
 The browser provides synchronized multi-stem playback/mixing, method comparison, automatic key estimation, a Capo/play-key view, a chord editor, generated guitar voicings/string notes, and PDF, MIDI, ChordPro, and JSON exports.
 
-Continuous TAB never falls back to the full mix. The one-click guitar TAB option enables the experimental six-stem Demucs model and runs note transcription only on its isolated guitar stem. Six-stem jobs always produce guitar MIDI for TAB; the all-stem MIDI option remains separate. TAB is presented in 12-second desktop or 8-second mobile systems; the default Clean view suppresses weaker and very short detected notes, while Full restores every result.
+Continuous TAB never falls back to the full mix. The guitar workflow uses the experimental six-stem model and defaults to reviewing a guitar preview before optional transcription; all-stem MIDI is separate. An already isolated guitar recording can bypass separation. TAB uses estimated bars (two per desktop row, one per mobile row), with editable tempo/meter/first-beat timing. Clean suppresses extremely weak/short events; Full retains more detections. These layouts are estimates, not verified original scores.
 
 Users may explicitly publish a completed analysis to the shared library. Public analyses are searchable and ranked by unique signed-in viewers or favorites; exact matching public URL jobs with the same analysis options are reused instead of being processed again. Private jobs remain visible only to their owner and administrators.
 

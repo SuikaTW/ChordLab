@@ -36,7 +36,8 @@ def run():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
                 page.goto(BASE)
-                page.wait_for_function("() => state.tabNotes.length > 0")
+                page.wait_for_function("() => state.current?.status === 'done'")
+                assert page.evaluate('state.tabJob === null'), 'Do not load TAB until requested'
                 assert page.locator('[data-track="piano"]').count() == 0, 'Weak track hidden by default'
                 assert page.locator('#stemDownloads a[href$="/audio/piano"]').count() == 0
                 source_before = page.locator('#audioPlayer').get_attribute('src')
@@ -49,8 +50,17 @@ def run():
                 page.locator('#showWeakTracks').uncheck()
                 assert page.locator('[data-track="piano"]').count() == 0
                 page.locator('[data-result-view="tab"]').click()
+                page.wait_for_function("() => state.tabNotes.length > 0")
+                base_revision = page.evaluate('TabStudio.inspect().revision')
                 page.wait_for_function("() => document.querySelectorAll('[data-tab-start]').length > 0")
-                assert page.locator('[data-tab-start]').count() > 501, "New TAB should retain weak/short events"
+                page.locator('#guitarPreview').click()
+                page.wait_for_function('() => document.querySelector("#guitarPreviewPlayer").readyState >= 1')
+                assert 19 <= page.evaluate('document.querySelector("#guitarPreviewPlayer").duration') <= 21
+                assert page.evaluate('document.querySelector("#audioPlayer").paused')
+                page.locator('#guitarPreviewPlayer').evaluate('(node) => node.pause()')
+                assert page.evaluate('TabStudio.inspect().count') > 501, "New TAB should retain weak/short events"
+                assert page.locator('[data-tab-system]').count() <= 10, 'Only visible TAB rows should be mounted'
+                page.locator('.tab-options > summary').click()
                 page.locator('#tabTuning').select_option('drop_d')
                 page.locator('#capoSelect').select_option('2')
                 page.wait_for_function("() => state.tabWorker === null && state.capo === 2 && state.tabTuning === 'drop_d'")
@@ -59,29 +69,74 @@ def run():
                 # Rapid changes must cancel stale worker output and finish on the last selection.
                 page.evaluate("() => {for(const tuning of ['standard','dadgad','drop_d']){const s=document.querySelector('#tabTuning');s.value=tuning;s.dispatchEvent(new Event('change'))}}")
                 page.wait_for_function("() => state.tabWorker === null && state.tabTuning === 'drop_d'")
-                for string in range(6):
-                    assert page.locator('.tab-system').first.locator('.tab-system-row').count() == 6
+                assert page.locator('.tab-system').first.locator('.tab-system-row').count() == 6
                 assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth"), "Page must not overflow on mobile"
                 assert 'error' not in (page.locator('#toast').get_attribute('class') or ''), page.locator('#toast').inner_text()
                 page.locator('#tabVoice').select_option('high')
                 page.locator('#tabPosition').select_option('middle')
-                page.wait_for_function("() => state.tabWorker === null && document.querySelector('#tabNoteSummary').textContent.includes('聲部篩選')")
+                page.wait_for_function("() => state.tabWorker === null && TabStudio.inspect().count > 0")
+                page.locator('.tab-options > summary').click()
+                page.locator('#tabEditMode').check()
+                note_button = page.locator('[data-note-index]').first
+                note_index = note_button.get_attribute('data-note-index')
+                note_button.click()
+                old_fret = int(page.locator('#tabEditFret').input_value())
+                max_fret = int(page.locator('#tabEditFret').get_attribute('max'))
+                new_fret = old_fret + 1 if old_fret < max_fret else old_fret - 1
+                page.locator('#tabEditFret').fill(str(new_fret))
+                page.locator('#tabNoteForm button[type="submit"]').click()
+                assert page.locator(f'[data-note-index="{note_index}"]').inner_text() == str(new_fret)
+                assert page.locator('#tabSave').is_enabled()
+                with page.expect_response(lambda response: response.url.endswith('/tab') and response.request.method == 'PUT') as saved:
+                    page.locator('#tabSave').click()
+                assert saved.value.ok, [(error.get('loc'), error.get('msg')) for error in saved.value.json().get('detail', [])]
+                assert saved.value.json()['revision'] == base_revision + 1, (base_revision, saved.value.json()['revision'])
+                page.wait_for_function(f'() => TabStudio.inspect().revision === {base_revision + 1} && !TabStudio.inspect().dirty')
+                page.locator(f'[data-note-index="{note_index}"]').click()
+                count_before = page.evaluate('TabStudio.inspect().count')
+                page.locator('#tabDeleteNote').click()
+                assert page.evaluate('TabStudio.inspect().count') == count_before - 1
+                page.locator('#tabUndo').click()
+                assert page.evaluate('TabStudio.inspect().count') == count_before
+                page.locator('#tabSave').click()
+                page.wait_for_function(f'() => TabStudio.inspect().revision === {base_revision + 2} && !TabStudio.inspect().dirty')
+                page.locator('#tabFlowViewport').evaluate('(node) => node.scrollTop = node.scrollHeight - node.clientHeight')
+                page.wait_for_function('() => Number(document.querySelector("[data-tab-system]").dataset.tabSystem) > 0')
+                assert page.locator('[data-tab-system]').count() <= 10
+                page.screenshot(path=f'/tmp/chordlab-studio-{name}.png', full_page=False)
                 page.screenshot(path=f"/tmp/chordlab-tab-{name}.png", full_page=False)
                 page.locator('.analysis-options > summary').click()
                 page.locator('label:has(#pureGuitar)').click()
                 assert page.locator('#separateStems').is_disabled()
                 assert page.locator('#guitarTabOnly').is_disabled()
                 page.locator('label:has(#pureGuitar)').click()
-                page.locator('label:has(#guitarTabOnly)').click()
+                page.locator('#analysisPreset').select_option('guitar')
                 assert page.locator('#separateStems').is_checked()
                 assert page.locator('[name="separation_model"]').input_value() == 'htdemucs_6s'
                 page.locator('.analysis-options > summary').click()
                 page.reload()
-                page.wait_for_function("() => state.tabNotes.length > 0")
+                page.wait_for_function("() => state.current?.status === 'done'")
+                page.locator('[data-result-view="tab"]').click()
+                page.wait_for_function(f'() => state.tabNotes.length > 0 && TabStudio.inspect().revision === {base_revision + 2}')
                 assert page.locator('#tabTuning').input_value() == 'drop_d', "Tuning must persist per song"
                 assert page.locator('#capoSelect').input_value() == '2', "Capo must persist per song"
                 assert page.locator('#tabVoice').input_value() == 'high'
                 assert page.locator('#tabPosition').input_value() == 'middle'
+                assert page.locator(f'[data-note-index="{note_index}"]').inner_text() == str(new_fret)
+                # Review first, then explicitly queue a guitar transcription.
+                review_id = ('a' if name == 'desktop' else 'b') * 32
+                page.evaluate('(id) => openJob(id)', review_id)
+                page.wait_for_function('(id) => state.current?.id === id', arg=review_id)
+                page.locator('[data-result-view="tab"]').click()
+                page.wait_for_function('() => document.querySelector("#generateGuitarTab").textContent === "產生 TAB" && !document.querySelector("#generateGuitarTab").classList.contains("hidden")')
+                assert page.evaluate('state.tabSource') == 'unavailable'
+                page.locator('#guitarPreview').click()
+                page.wait_for_function('() => document.querySelector("#guitarPreviewPlayer").readyState >= 1')
+                page.locator('#guitarPreviewPlayer').evaluate('(node) => node.pause()')
+                page.locator('#generateGuitarTab').click()
+                page.wait_for_function('() => state.tabSource === "guitar" && TabStudio.inspect().count > 0')
+                assert page.locator('#generateGuitarTab').is_hidden()
+                assert page.locator('#stemDownloads a[href$="/export/midi/guitar"]').count() == 1
                 assert not errors, errors
                 print(json.dumps({"viewport": name, "errors": errors, "status": "passed"}), flush=True)
                 context.close()

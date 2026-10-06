@@ -226,6 +226,37 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.primary svg,.analysis-options svg,.downloads-panel svg{transition:none}}
 
 /* Focused playback and readable TAB systems */
+.eyebrow,.brand small,#engineStatus{display:none!important}
+.analysis-preset{margin:14px 0}
+.analysis-preset select{width:100%;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);padding:12px;font:inherit}
+.analysis-options-body .stem-option small{display:none}
+.method-options{font-size:11px;color:var(--muted);margin-left:auto}
+.method-options summary,.tab-options summary{cursor:pointer;padding:8px 0;min-height:32px}
+.method-options .method-switch{margin-top:6px}
+.method-row .music-settings{margin-left:0;flex-wrap:wrap}
+.detail-grid:has(#segmentForm.hidden){grid-template-columns:1fr}
+.segment-editor:has(#segmentForm.hidden){display:none}
+.tab-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:14px 0}
+.tab-toolbar button{min-height:36px;font-size:11px;padding:8px 10px}
+.tab-toolbar .mini-check,.tab-view-options .mini-check{margin:0;font-size:11px;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.tab-toolbar input[type=checkbox],.tab-view-options input[type=checkbox]{width:16px;height:16px;accent-color:var(--ink)}
+.tab-toolbar button:disabled{opacity:.45;cursor:default}
+#tabSaveStatus{font-size:11px;color:var(--muted)}
+.tab-options{border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);margin:12px 0}
+.tab-options .tab-settings{margin-top:12px}
+.tab-options>small{display:block;margin:0 0 12px;line-height:1.6}
+.tab-settings input{max-width:78px;padding:7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font:inherit;color:var(--ink)}
+.tab-view-options{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:12px 0;color:var(--muted);font-size:11px}
+.tab-warnings{background:#fff3d6;color:#805818;border-radius:10px;font-size:12px;padding:12px;line-height:1.6}
+.guitar-preview{display:grid;gap:6px;margin:12px 0;color:var(--muted);font-size:11px}
+.guitar-preview audio{width:100%;height:44px}
+#tabNoteDialog{max-width:calc(100vw - 32px);width:360px;border:1px solid var(--line);border-radius:16px;padding:22px;background:var(--panel);color:var(--ink);box-shadow:0 24px 80px #0003}
+#tabNoteDialog::backdrop{background:#15181466;backdrop-filter:blur(3px)}
+#tabNoteDialog h3{margin:0 0 12px}
+#tabNoteDialog p{font-size:12px;line-height:1.6;color:var(--muted)}
+#tabNoteDialog label{display:grid;gap:8px;font-size:12px}
+#tabNoteDialog input,#tabNoteDialog select{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)}
+#tabNoteDialog .editor-actions{flex-wrap:wrap;margin-top:20px}
 .active-workspace:not(.hidden){animation:workspace-enter .38s cubic-bezier(.2,.7,.2,1) both}
 [data-result-panel]:not(.result-hidden){animation:panel-enter .24s ease-out both}
 #workMessage:empty{display:none}
@@ -251,7 +282,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 .tab-settings select{max-width:190px;padding:7px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font:inherit}
 .tab-system-row>b small{font-size:8px;display:block;font-weight:400;color:var(--muted)}
 .stem-option:has(input:disabled){opacity:.5}
-.continuous-tab{min-height:0;padding:0;display:grid;gap:11px;width:100%!important}
+.continuous-tab{min-height:0;padding:0;display:block;width:100%!important;overflow-anchor:none}
 .tab-system{min-width:0;padding:11px 12px 13px;border:1px solid #d8d4ca;border-radius:10px;background:#fffef9;transition:border-color .18s,box-shadow .18s,transform .18s}
 .tab-system.playing{border-color:var(--coral);box-shadow:0 6px 22px rgba(255,118,92,.12);transform:translateY(-1px)}
 .tab-system header{display:flex;align-items:center;gap:8px;margin:0 0 8px 28px;color:#89877f;font:600 9px/1 ui-monospace,monospace}
@@ -264,6 +295,20 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 .tab-system-string button:hover,.tab-system-string button:focus-visible{background:var(--acid);color:var(--ink);z-index:4}
 .tab-system-playhead{position:absolute;top:0;bottom:0;left:28px;width:2px;border-radius:2px;background:var(--coral);box-shadow:0 0 0 2px rgba(255,118,92,.13);opacity:0;pointer-events:none;transition:left .12s linear,opacity .15s}
 .tab-system.playing .tab-system-playhead{opacity:1}
+.continuous-tab .tab-system{height:219px;box-sizing:border-box;margin-bottom:11px;contain:layout paint;transform:none}
+.tab-spacer{width:1px;pointer-events:none}
+.tab-rhythm-grid{position:absolute;inset:0 0 0 28px;pointer-events:none}
+.tab-beat,.tab-barline{position:absolute;top:0;bottom:0;width:1px;background:#d7d3c6;z-index:0}
+.tab-beat{background:repeating-linear-gradient(to bottom,#ddd9cd 0 3px,transparent 3px 7px)}
+.tab-barline{width:2px;background:#8d9187}
+.tab-rest{position:absolute;top:72px;font-size:10px;background:#fffef9;color:#9d998e;padding:2px;transform:translateX(-50%)}
+.tab-sustain{position:absolute;top:1px;height:2px;background:#9cae9477;pointer-events:none}
+.tab-system-string button.suspect{background:#986522}
+.tab-system-string button.edited{background:#346f63}
+.tab-system-playhead{transition:opacity .15s;will-change:left}
+.tab-flow-viewport{scroll-behavior:auto;overflow-anchor:none}
+.library-card{content-visibility:auto;contain-intrinsic-size:auto 200px}
+@media(prefers-reduced-motion:reduce){.active-workspace:not(.hidden),[data-result-panel]:not(.result-hidden),.player-toggle:disabled{animation:none!important}.tab-system,.chord-block,.lyrics-list button,.tab-system-playhead{transition:none!important}}
 
 @keyframes workspace-enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes panel-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
