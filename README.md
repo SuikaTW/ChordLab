@@ -1,5 +1,7 @@
 # ChordLab
 
+[English](README.md) | [繁體中文](README.zh-TW.md)
+
 Private music-analysis workspace for a single server. It accepts an upload or a supported public media URL, normalizes the audio, and runs two independent analysis paths:
 
 - Spotify Basic Pitch for note events and MIDI, followed by a local chord-template/HMM pass.
