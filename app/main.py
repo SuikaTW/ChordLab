@@ -38,6 +38,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from starlette.middleware.sessions import SessionMiddleware
+from app.stem_activity import detect_activity
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -1381,7 +1382,7 @@ def separate_audio(job_id: str, source: Path, directory: Path, model: str) -> tu
     ], env=demucs_env, timeout=5400)
     generated = output_root / model / demucs_input.stem
     stems = directory / "stems"
-    stems.mkdir(mode=0o700)
+    stems.mkdir(mode=0o700, exist_ok=True)
     stem_names = ["vocals", "bass", "drums", "other"] + (["guitar", "piano"] if detailed else [])
     for stem in stem_names:
         candidate = generated / f"{stem}.mp3"
@@ -1556,6 +1557,9 @@ def process_job(
             analysis_stem = "harmony" if separation_model == "htdemucs_6s" else "other"
         else:
             analysis_audio, stem_names, analysis_stem = audio, ["original"], "original"
+        all_stems = list(stem_names)
+        activity = detect_activity(directory, all_stems) if separate_stems else {}
+        stem_names = [name for name in all_stems if activity.get(name, {}).get("active", True)]
         lyrics = None
         lyrics_error = None
         if lyrics_requested:
@@ -1581,7 +1585,7 @@ def process_job(
         elif separate_stems and stem_midi:
             midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, stem_names, analysis_stem, midi_output)
             chordino_progress = 94
-        elif separate_stems and separation_model == "htdemucs_6s":
+        elif separate_stems and separation_model == "htdemucs_6s" and "guitar" in stem_names:
             midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory)
             chordino_progress = 94
         update_job(job_id, note_count=basic.get("note_count", 0), progress=chordino_progress, message="Chordino 辨識和弦與分析 Key")
@@ -1615,6 +1619,8 @@ def process_job(
                 "model": separation_model if separate_stems else None,
                 "analysis_stem": analysis_stem,
                 "stems": stem_names,
+                "all_stems": all_stems,
+                "activity": activity,
                 "midi_stems": midi_stems,
                 "midi_errors": midi_errors,
             },
@@ -1686,7 +1692,8 @@ def audio_mix(
 ) -> FileResponse:
     row = accessible_job(request, job_id)
     result = json.loads(row["result"]) if row["result"] else {}
-    available = list((result.get("separation") or {}).get("stems") or ["original"])
+    separation = result.get("separation") or {}
+    available = list(separation.get("all_stems") or separation.get("stems") or ["original"])
     requested = [track.strip() for track in tracks.split(",") if track.strip()]
     selected = [track for track in available if track in requested]
     if len(selected) < 2 or len(selected) != len(set(requested)):
@@ -1728,7 +1735,8 @@ def audio_mix(
 def audio_track(request: Request, job_id: str, track: str) -> FileResponse:
     row = accessible_job(request, job_id)
     result = json.loads(row["result"]) if row["result"] else {}
-    allowed = set(result.get("separation", {}).get("stems", ["original"]))
+    separation = result.get("separation") or {}
+    allowed = set(separation.get("all_stems") or separation.get("stems") or ["original"])
     if track not in allowed:
         raise HTTPException(404, "未知的音軌")
     if track == "original":

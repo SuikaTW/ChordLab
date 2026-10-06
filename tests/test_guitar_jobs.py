@@ -96,6 +96,46 @@ class GuitarJobTests(unittest.TestCase):
         self.assertEqual(result["guitar_tab"], {"profile": "guitar_v2", "source": "original"})
         self.assertIn("guitar", result["separation"]["midi_stems"])
 
+    def test_separated_pipeline_skips_weak_tracks_before_midi(self):
+        job_id = "gated-pipeline"
+        directory = self.jobs / job_id
+        directory.mkdir()
+        source = directory / "source.wav"
+        source.touch()
+        with main.db() as connection:
+            connection.execute("INSERT INTO jobs(id,title,source,status,created_at,updated_at) VALUES (?,?,?,'queued',1,1)", (job_id, "test", "test"))
+
+        def fake_command(command, **kwargs):
+            if any("basic_pitch_worker.py" in arg for arg in command):
+                Path(command[3]).write_text(json.dumps({"notes": [], "chords": [], "note_count": 0}))
+            elif any("chordino_worker.py" in arg for arg in command):
+                Path(command[3]).write_text(json.dumps({"chords": []}))
+
+        with patch.object(main, "normalize_audio", return_value=9.0), \
+             patch.object(main, "run_command", side_effect=fake_command), \
+             patch.object(main, "separate_audio", return_value=(source, ["original", "harmony", "guitar", "piano"])), \
+             patch.object(main, "detect_activity", return_value={"piano": {"active": False}}), \
+             patch.object(main, "transcribe_stem_midis", return_value=(["guitar"], {})) as midi:
+            main.process_job(job_id, "upload", "test", separate_stems=True, separation_model="htdemucs_6s", stem_midi=True)
+        self.assertEqual(midi.call_args.args[2], ["original", "harmony", "guitar"])
+        with main.db() as connection:
+            row = connection.execute("SELECT result,status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        self.assertEqual(row["status"], "done")
+        separation = json.loads(row["result"])["separation"]
+        self.assertNotIn("piano", separation["stems"])
+        self.assertIn("piano", separation["all_stems"])
+
+    def test_hidden_audio_remains_accessible_but_unknown_track_is_rejected(self):
+        directory = self.jobs / "hidden-track"
+        (directory / "stems").mkdir(parents=True)
+        (directory / "stems" / "piano.wav").write_bytes(b"test")
+        result = {"separation": {"stems": ["original"], "all_stems": ["original", "piano"]}}
+        with main.db() as connection:
+            connection.execute("INSERT INTO jobs(id,title,source,status,owner,result,created_at,updated_at) VALUES ('hidden-track','test','test','done','tester',?,1,1)", (json.dumps(result),))
+        self.assertEqual(self.client.get("/api/jobs/hidden-track/audio/piano").status_code, 200)
+        self.assertEqual(self.client.get("/api/jobs/hidden-track/audio/unknown").status_code, 404)
+        self.assertEqual(self.client.get("/api/jobs/hidden-track/audio-mix?tracks=original,unknown").status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

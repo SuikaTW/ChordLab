@@ -37,7 +37,7 @@
                 <label class="mini-check"><input name="stem_midi" type="checkbox" value="true"><span>另外產生所有音軌 MIDI</span><small>六軌模式會自動分析吉他；勾選後才會再轉人聲、Bass、鋼琴等 MIDI</small></label>
               </div>
               <label class="stem-option lyric-option"><input name="transcribe_lyrics" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>辨識歌詞與時間</b><small>優先使用人聲軌，並把對時歌詞加入 PDF。</small></span></label>
-              <label class="stem-option guitar-tab-option"><input id="guitarTabOnly" type="checkbox"><span class="stem-check" aria-hidden="true"></span><span><b>只用吉他聲音產生連續 TAB</b><small>自動啟用六軌分離，不混入其他樂器。</small></span></label>
+              <label class="stem-option guitar-tab-option"><input id="guitarTabOnly" type="checkbox"><span class="stem-check" aria-hidden="true"></span><span><b>用分離的吉他聲音產生連續 TAB</b><small>啟用六軌分離；可能仍含殘音或多把吉他。</small></span></label>
               <label class="stem-option guitar-tab-option"><input id="pureGuitar" name="pure_guitar" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>來源已是純吉他，直接產生 TAB</b><small>適合吉他獨奏或獨立音軌；保留原音，不做分軌。完整樂團或含人聲的歌曲請用上面的選項。</small></span></label>
               <label class="public-toggle"><input name="is_public" type="checkbox" value="true"><span><b>公開這次分析</b><small>讓其他人搜尋、收藏，避免重複排隊</small></span></label>
             </div>
@@ -77,7 +77,7 @@
             <label class="volume-control"><span aria-hidden="true">🔊</span><input id="volumeSlider" type="range" min="0" max="1" value="1" step="0.01" aria-label="播放器音量"><output id="volumeValue">100%</output></label>
           </div>
           <audio id="audioPlayer" class="audio-engine" preload="metadata" playsinline></audio>
-          <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><small id="analysisTrackLabel"></small></div>
+          <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><label id="weakTrackOption" class="hidden"><input id="showWeakTracks" type="checkbox"> 顯示弱音軌 <small id="weakTrackCount"></small></label><small id="analysisTrackLabel"></small></div>
           <div class="method-row"><div class="method-switch"><button data-method="chordino" class="active" title="較適合完整歌曲的和弦辨識">和弦辨識</button><button data-method="basic_pitch" title="從音符推算和弦">音符推算</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats" aria-hidden="true"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
           <details id="stemDownloadsPanel" class="downloads-panel hidden"><summary><span>分軌與 MIDI 下載</span><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></summary><div id="stemDownloads" class="stem-downloads"></div></details>
 
@@ -112,8 +112,9 @@
           <section id="fullTabPanel" class="full-tab-panel result-hidden hidden" data-result-panel="tab">
             <div class="panel-title"><div><p class="eyebrow">GUITAR TAB</p><h3>分段動態六線譜</h3></div><div class="tab-heading-actions"><span id="tabSource" class="save-state"></span><div class="tab-density" aria-label="TAB 顯示密度"><button class="active" data-tab-density="clean">清楚</button><button data-tab-density="full">完整</button></div></div></div>
             <div class="tab-settings"><label>實際調弦 <select id="tabTuning"><option value="standard">標準 E A D G B e</option><option value="drop_d">Drop D</option><option value="dadgad">DADGAD</option><option value="half_down">降半音</option><option value="whole_down">降全音</option></select></label><span id="tabNoteSummary" role="status"></span></div>
+            <div class="tab-settings"><label>聲部篩選 <select id="tabVoice"><option value="all">全部吉他音符</option><option value="high">同時起音只取最高音</option><option value="low">同時起音只取最低音</option></select></label><label>偏好把位 <select id="tabPosition"><option value="auto">自動</option><option value="open">0–4 格</option><option value="middle">5–9 格</option><option value="high">9–14 格</option></select></label></div>
             <div id="tabFlowViewport" class="tab-flow-viewport"><div id="continuousTab" class="continuous-tab"></div></div>
-            <p class="voicing-notes">數字是相對於上方 Capo 的格數；請設定演奏時的調弦與 Capo。指法為推算結果，可能與原演奏不同。清楚模式只濾除極短、極弱的音；完整模式保留更多音符。</p>
+            <p class="voicing-notes">數字與偏好把位皆相對於 Capo；請設定實際調弦。模型會把電吉他、木吉他合在同一軌，無法知道原演奏使用哪條弦。聲部篩選只按同時起音的高低音取捨，不代表分離某把吉他；偏好把位不限制超出範圍的必要音。要更可靠，請上傳單把吉他的獨立錄音，選「來源已是純吉他」。</p>
           </section>
 
           <section id="lyricsPanel" class="lyrics-panel result-hidden hidden" data-result-panel="lyrics">
@@ -131,7 +132,7 @@
     <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
   </main>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/tab-engine.js?v=1" defer></script>
-  <script src="/static/app.js?v=26" defer></script>
+  <script src="/static/tab-engine.js?v=2" defer></script>
+  <script src="/static/app.js?v=27" defer></script>
 </body>
 </html>

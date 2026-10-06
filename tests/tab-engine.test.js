@@ -1,6 +1,18 @@
 import '../app/static/tab-engine.js';
 
 const {assign} = globalThis.ChordLabTab;
+Deno.test('register filters are explicit and position preference preserves pitch', () => {
+  const source = [note(52), note(64), note(67), note(55, .5), note(69, .5)];
+  const high = assign(source, {voice: 'high'}), low = assign(source, {voice: 'low'});
+  assert(high.notes.map(n => n.midi).join(',') === '67,69', 'Keep highest onset notes');
+  assert(low.notes.map(n => n.midi).join(',') === '52,55', 'Keep lowest onset notes');
+  assert(high.voiceFilteredCount === 3 && high.omittedCount === 0, 'Separate filter count from unplayable count');
+  const preferred = assign([note(64)], {position: 'middle'});
+  assert(preferred.notes[0].fret >= 5 && preferred.notes[0].fret <= 9, 'Prefer requested position');
+  playable(preferred);playable(high);playable(low);
+  const necessary = assign([note(40)], {position: 'high'});
+  assert(necessary.notes.length === 1 && necessary.notes[0].fret === 0, 'Preference must not drop necessary notes');
+});
 function assert(value, message) {if (!value) throw new Error(message);}
 function note(midi, start = 0, length = .09, velocity = .4) {
   return {midi, start, end: start + length, velocity};

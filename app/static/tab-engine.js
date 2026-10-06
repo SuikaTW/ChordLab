@@ -53,8 +53,16 @@
         groups.push({start: note.start, notes: [note]});
       }
     }
+    // Register selection is only a heuristic; it does not separate guitars.
+    if (options.voice === 'high' || options.voice === 'low') {
+      for (const group of groups) {
+        const sorted = [...group.notes].sort((a, b) => a.midi - b.midi);
+        group.notes = [options.voice === 'high' ? sorted[sorted.length - 1] : sorted[0]];
+      }
+    }
+    const range = {open: [0, 4], middle: [5, 9], high: [9, 14]}[options.position];
     const width = 24;
-    let beam = [{cost: 0, position: 0, active: Array(6).fill(null), parent: null, placed: []}];
+    let beam = [{cost: 0, position: range ? range[0] : 0, active: Array(6).fill(null), parent: null, placed: []}];
     for (const group of groups) {
       // A single guitar has at most six independently sounding strings.
       const pitches = [...group.notes].sort((a, b) => b.velocity - a.velocity)
@@ -78,8 +86,9 @@
             const overlap = old && old.end > note.start + .025;
             const crossing = candidate.placed.filter(n => n.midi < note.midi && n.string > string).length;
             const movement = fret > 0 ? Math.abs(fret - candidate.position) * .12 : 0;
+            const preference = range ? Math.max(0, range[0] - fret, fret - range[1]) * 2 : 0;
             const cost = candidate.cost + fret * .025 + movement + crossing * 3 +
-              spanCost(placed) - spanCost(candidate.placed) +
+              preference + spanCost(placed) - spanCost(candidate.placed) +
               (overlap && old.midi !== note.midi ? .7 : 0);
             const active = [...candidate.active]; active[string] = placedNote;
             const used = new Set(candidate.used); used.add(string);
@@ -108,8 +117,10 @@
       if (previous && previous.end > note.start) previous.end = note.start;
       lastByString[note.string] = note;
     }
+    const selectedCount = groups.reduce((count, group) => count + group.notes.length, 0);
     return {notes: assigned, inputCount: notes.length, preparedCount: prepared.length,
-      omittedCount: prepared.length - assigned.length, tuning: [...tuning], capo};
+      voiceFilteredCount: prepared.length - selectedCount,
+      omittedCount: selectedCount - assigned.length, tuning: [...tuning], capo};
   }
 
   root.ChordLabTab = {assign, TUNINGS};

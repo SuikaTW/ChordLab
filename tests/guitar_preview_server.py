@@ -1,5 +1,6 @@
 """Local browser-test server: temporary catalog, existing media read-only by workflow."""
 import sqlite3
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -26,6 +27,12 @@ def run():
         main.init_db()
         row["owner"] = main.USERNAME
         row["status"] = "done"
+        result = json.loads(row["result"])
+        separation = result["separation"]
+        separation["all_stems"] = separation.get("all_stems") or separation["stems"]
+        separation["stems"] = [name for name in separation["all_stems"] if name != "piano"]
+        separation["activity"] = {"piano": {"active": False}}
+        row["result"] = json.dumps(result)
         with main.db() as connection:
             columns = ",".join(row)
             placeholders = ",".join("?" for _ in row)
