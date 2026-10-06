@@ -1620,8 +1620,8 @@ def audio_mix(
         with mix_generation_lock:
             if not output.is_file():
                 mixes.mkdir(mode=0o700, exist_ok=True)
-                if sum(1 for path in mixes.glob("*.m4a") if path.is_file()) >= 24:
-                    raise HTTPException(429, "這首歌的 iPhone 同步混音快取已達上限")
+                if sum(1 for path in mixes.glob("*.m4a") if path.is_file()) >= 64:
+                    raise HTTPException(429, "這首歌的同步混音快取已達上限")
                 temporary = mixes / f"{mix_key}.building.m4a"
                 temporary.unlink(missing_ok=True)
                 command = [str(FFMPEG), "-nostdin", "-y"]
