@@ -70,7 +70,7 @@ uv venv .venv-demucs --python 3.12
 uv pip install --python .venv-demucs/bin/python -r requirements-demucs.txt
 ```
 
-`bin/ffmpeg` and `bin/ffprobe` are used for decoding and encoding without requiring a system package install. The first separation downloads the `htdemucs` model weights to the user cache.
+`bin/ffmpeg` and `bin/ffprobe` are used for decoding and encoding without requiring a system package install. YouTube imports also require yt-dlp's JavaScript runtime: `uv sync` installs `yt-dlp-ejs`, then `scripts/install-deno.sh` installs the pinned Deno build after verifying its SHA-256 digest. The first separation downloads the `htdemucs` model weights to the user cache.
 
 The lyrics runtime is isolated in `.venv-whisper` and defaults to the multilingual `small` model configured by `CHORDLAB_WHISPER_MODEL`:
 

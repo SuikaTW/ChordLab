@@ -70,7 +70,7 @@ uv venv .venv-demucs --python 3.12
 uv pip install --python .venv-demucs/bin/python -r requirements-demucs.txt
 ```
 
-專案使用 `bin/ffmpeg` 與 `bin/ffprobe` 進行解碼和編碼，不需要安裝系統套件。第一次進行分軌時，系統會把 `htdemucs` 模型權重下載至使用者快取。
+專案使用 `bin/ffmpeg` 與 `bin/ffprobe` 進行解碼和編碼，不需要安裝系統套件。YouTube 匯入還需要 yt-dlp 的 JavaScript 執行環境；`uv sync` 會安裝 `yt-dlp-ejs`，再執行 `scripts/install-deno.sh` 安裝已固定版本並驗證 SHA-256 的 Deno。第一次進行分軌時，系統會把 `htdemucs` 模型權重下載至使用者快取。
 
 歌詞執行環境獨立安裝於 `.venv-whisper`，預設使用 `CHORDLAB_WHISPER_MODEL` 設定的多語言 `small` 模型：
 

@@ -22,7 +22,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from authlib.integrations.starlette_client import OAuth
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -53,6 +53,8 @@ WHISPER_PYTHON = ROOT / ".venv-whisper" / "bin" / "python"
 VAMP_PATH = ROOT / "vendor" / "vamp"
 FFMPEG = ROOT / "bin" / "ffmpeg"
 FFPROBE = ROOT / "bin" / "ffprobe"
+DENO = ROOT / "bin" / "deno"
+YTDLP = ROOT / ".venv" / "bin" / "yt-dlp"
 BWRAP = Path(shutil.which("bwrap")) if shutil.which("bwrap") else None
 MAX_UPLOAD = int(os.getenv("CHORDLAB_MAX_UPLOAD_MB", "200")) * 1024 * 1024
 MAX_DURATION = int(os.getenv("CHORDLAB_MAX_DURATION_MIN", "20")) * 60
@@ -411,8 +413,8 @@ def startup() -> None:
         raise RuntimeError("CHORDLAB_USERNAME, CHORDLAB_PASSWORD and a 32+ character CHORDLAB_SECRET are required")
     if STORAGE_MOUNT and not STORAGE_MOUNT.is_mount():
         raise RuntimeError(f"歌曲資料磁碟尚未掛載：{STORAGE_MOUNT}")
-    if not BWRAP or not BWRAP.is_file() or not FFMPEG.is_file() or not FFPROBE.is_file():
-        raise RuntimeError("分析沙箱、ffmpeg 或 ffprobe 尚未安裝，為避免不安全地解析上傳內容，服務拒絕啟動")
+    if not BWRAP or not BWRAP.is_file() or not FFMPEG.is_file() or not FFPROBE.is_file() or not DENO.is_file() or not YTDLP.is_file():
+        raise RuntimeError("分析沙箱、ffmpeg、ffprobe、Deno 或 yt-dlp 尚未安裝，服務拒絕啟動")
     init_db()
     with db() as connection:
         connection.execute("UPDATE jobs SET status='queued', progress=2, message='服務重啟，已重新加入佇列' WHERE status='working'")
@@ -448,6 +450,7 @@ def health() -> dict:
         "storage_ready": not STORAGE_MOUNT or STORAGE_MOUNT.is_mount(),
         "worker_sandbox": bool(BWRAP and BWRAP.is_file()),
         "media_probe": FFPROBE.is_file(),
+        "youtube_runtime": DENO.is_file() and YTDLP.is_file(),
     }
 
 
@@ -1063,6 +1066,18 @@ def ensure_public_url(value: str) -> str:
     hostname = parsed.hostname.lower().rstrip(".")
     if not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in ALLOWED_HOSTS):
         raise HTTPException(400, "此網域未開放自動下載；請改用上傳音檔")
+    youtube_id: str | None = None
+    if hostname == "youtu.be" or hostname.endswith(".youtu.be"):
+        youtube_id = parsed.path.strip("/").split("/", 1)[0]
+    elif hostname == "youtube.com" or hostname.endswith(".youtube.com"):
+        if parsed.path.rstrip("/") == "/watch":
+            youtube_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        else:
+            path_parts = parsed.path.strip("/").split("/")
+            if len(path_parts) >= 2 and path_parts[0] in {"embed", "live", "shorts"}:
+                youtube_id = path_parts[1]
+    if youtube_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{11}", youtube_id):
+        raise HTTPException(400, "YouTube 網址不完整：影片 ID 應為 11 碼，請重新複製完整分享連結")
     try:
         default_port = 443 if parsed.scheme == "https" else 80
         addresses = {item[4][0] for item in socket.getaddrinfo(hostname, port or default_port, type=socket.SOCK_STREAM)}
@@ -1131,7 +1146,11 @@ async def create_job(
         source_detail = file.filename
     else:
         source = "url"
-        source_detail = ensure_public_url(url or "")
+        try:
+            source_detail = ensure_public_url(url or "")
+        except HTTPException:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
         display_title = safe_title(title or "網址匯入")
     if separation_model not in {"htdemucs", "htdemucs_6s"}:
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -1370,17 +1389,23 @@ def separate_audio(job_id: str, source: Path, directory: Path, model: str) -> tu
 
 def download_url(job_id: str, url: str, directory: Path) -> tuple[Path, str]:
     update_job(job_id, progress=8, message="讀取網址資訊")
-    ytdlp = ROOT / ".venv" / "bin" / "yt-dlp"
-    metadata = run_command([str(ytdlp), "--ignore-config", "--no-cache-dir", "--dump-single-json", "--no-playlist", "--socket-timeout", "15", url], timeout=90, allow_network=True)
+    ytdlp_args = [
+        str(YTDLP), "--ignore-config", "--no-cache-dir",
+        "--js-runtimes", f"deno:{DENO}",
+    ]
+    metadata = run_command([*ytdlp_args, "--dump-single-json", "--no-playlist", "--socket-timeout", "15", url], timeout=90, allow_network=True)
     info = json.loads(metadata.stdout)
     duration = float(info.get("duration") or 0)
     if duration and duration > MAX_DURATION:
         raise RuntimeError(f"音訊超過 {MAX_DURATION // 60} 分鐘限制")
     title = safe_title(str(info.get("title") or "網址匯入"))
     output = directory / "download.%(ext)s"
+    for stale_download in directory.glob("download.*"):
+        if stale_download.is_file() or stale_download.is_symlink():
+            stale_download.unlink(missing_ok=True)
     update_job(job_id, title=title, progress=14, message="下載音訊")
     run_command([
-        str(ytdlp), "--ignore-config", "--no-cache-dir", "--no-playlist", "--no-part", "--restrict-filenames", "--max-filesize", str(MAX_UPLOAD),
+        *ytdlp_args, "--no-playlist", "--no-part", "--restrict-filenames", "--max-filesize", str(MAX_UPLOAD),
         "-f", "bestaudio/best", "-o", str(output), url,
     ], timeout=900, allow_network=True)
     candidates = [path for path in directory.glob("download.*") if path.is_file()]
