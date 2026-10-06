@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#15181b">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
   <header class="topbar">
@@ -58,8 +58,13 @@
         <div id="progressPanel" class="progress-panel hidden"><div class="progress-row"><span id="progressText">分析中</span><b id="progressValue">0%</b></div><div class="progress-track"><i id="progressBar"></i></div><p id="progressHelp">伺服器會依序完成音訊轉換、Basic Pitch 音符辨識與 Chordino 和弦辨識。</p></div>
 
         <div id="resultsPanel" class="results-panel hidden">
+          <div class="player-panel" aria-label="歌曲播放控制">
+            <button id="playToggle" class="player-toggle" type="button" aria-label="播放">▶</button>
+            <input id="seekSlider" class="seek-slider" type="range" min="0" max="0" value="0" step="0.1" aria-label="播放進度">
+            <span id="playerTime" class="player-time">0:00 / 0:00</span>
+          </div>
+          <audio id="audioPlayer" class="audio-engine" preload="metadata" playsinline></audio>
           <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><small id="analysisTrackLabel"></small></div>
-          <audio id="audioPlayer" controls preload="metadata"></audio>
           <div class="method-row"><div class="method-switch"><button data-method="chordino" class="active">Chordino</button><button data-method="basic_pitch">Basic Pitch</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
           <div id="stemDownloads" class="stem-downloads hidden"></div>
           <div class="timeline-wrap"><div class="timeline-ruler" id="timelineRuler"></div><div class="timeline" id="timeline"></div></div>
@@ -102,6 +107,6 @@
     <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
   </main>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/app.js?v=13" defer></script>
+  <script src="/static/app.js?v=17" defer></script>
 </body>
 </html>
