@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#15181b">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=8">
+  <link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
   <header class="topbar">
@@ -26,10 +26,11 @@
           <label class="drop-zone source-file hidden" id="dropZone"><input name="file" type="file" accept="audio/*,.mp4,.webm"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5l5 5M5 15v4a1 1 0 001 1h12a1 1 0 001-1v-4"/></svg><b>選擇或拖曳音訊</b><span id="fileName">MP3 / WAV / FLAC / M4A，最多 200 MB</span></label>
           <label class="stem-option"><input id="separateStems" name="separate_stems" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>分離音軌後分析 <em>CPU · 較慢</em></b><small>移除人聲、Bass 與鼓後分析和聲，並提供獨立音軌。</small></span></label>
           <div id="separationOptions" class="separation-options hidden">
-            <label>分離精細度<select name="separation_model"><option value="htdemucs">標準四軌</option><option value="htdemucs_6s">細分六軌（吉他／鋼琴為實驗性）</option></select></label>
-            <label class="mini-check"><input name="stem_midi" type="checkbox" value="true"><span>產生各樂器／人聲 MIDI</span><small>不含鼓；會明顯增加分析時間</small></label>
+            <label>分離精細度<select name="separation_model"><option value="htdemucs">標準四軌</option><option value="htdemucs_6s">細分六軌（吉他 TAB／鋼琴）</option></select></label>
+            <label class="mini-check"><input name="stem_midi" type="checkbox" value="true"><span>另外產生所有音軌 MIDI</span><small>六軌模式會自動分析吉他；勾選後才會再轉人聲、Bass、鋼琴等 MIDI</small></label>
           </div>
           <label class="stem-option lyric-option"><input name="transcribe_lyrics" type="checkbox" value="true"><span class="stem-check" aria-hidden="true"></span><span><b>辨識歌詞與時間</b><small>優先使用人聲軌，並把對時歌詞加入 PDF；歌唱辨識可能需要人工校正。</small></span></label>
+          <label class="stem-option guitar-tab-option"><input id="guitarTabOnly" type="checkbox"><span class="stem-check" aria-hidden="true"></span><span><b>只用吉他聲音產生連續 TAB</b><small>自動啟用六軌分離；TAB 不會再混入人聲、Bass、鋼琴或其他樂器。</small></span></label>
           <div class="submit-row"><button class="primary" type="submit"><span>開始分析</span><svg viewBox="0 0 24 24"><path d="M5 12h14m-5-5l5 5-5 5"/></svg></button><label class="public-toggle"><input name="is_public" type="checkbox" value="true"><span><b>公開分析</b><small>完成後可被搜尋、收藏與重複使用</small></span></label></div>
           <p class="fine-print">僅供你有權使用的音訊。Spotify 受 DRM 保護的歌曲連結無法直接下載，可改貼合法來源或上傳音檔。</p>
         </form>
@@ -66,7 +67,7 @@
           <section id="fullTabPanel" class="full-tab-panel hidden">
             <div class="panel-title"><div><p class="eyebrow">CONTINUOUS TAB</p><h3>連續動態 TAB</h3></div><span id="tabSource" class="save-state"></span></div>
             <div id="tabFlowViewport" class="tab-flow-viewport"><div id="continuousTab" class="continuous-tab"></div></div>
-            <p class="voicing-notes">依音高、可用弦與前後把位推算；空白處代表不用彈，播放時會自動跟隨。</p>
+            <p class="voicing-notes">只使用分離後的吉他軌，依音高、可用弦與前後把位推算；空白處代表不用彈。</p>
           </section>
 
           <section id="lyricsPanel" class="lyrics-panel hidden">
@@ -101,6 +102,6 @@
     <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
   </main>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/app.js?v=8" defer></script>
+  <script src="/static/app.js?v=9" defer></script>
 </body>
 </html>

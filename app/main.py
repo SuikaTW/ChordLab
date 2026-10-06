@@ -237,6 +237,18 @@ async def authentication(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def https_policy(request: Request, call_next):
+    cloudflare_request = bool(request.headers.get("cf-ray"))
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
+    if cloudflare_request and forwarded_proto != "https":
+        return RedirectResponse(str(request.url.replace(scheme="https")), status_code=308)
+    response = await call_next(request)
+    if forwarded_proto == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 @app.on_event("startup")
 def startup() -> None:
     if not USERNAME or not PASSWORD or len(SECRET) < 32:
@@ -651,16 +663,24 @@ async def create_job(
         stem_midi = False
     if source == "url":
         with db() as connection:
-            duplicate = connection.execute(
+            candidates = connection.execute(
                 """
-                SELECT id FROM jobs
+                SELECT id, result FROM jobs
                 WHERE source=? AND source_kind='url' AND status='done' AND is_public=1
                   AND separate_stems=? AND separation_model=?
                   AND stem_midi>=? AND transcribe_lyrics>=?
-                ORDER BY updated_at DESC LIMIT 1
+                ORDER BY updated_at DESC LIMIT 8
                 """,
                 (source_detail, int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics)),
-            ).fetchone()
+            ).fetchall()
+        duplicate = None
+        for candidate in candidates:
+            if separation_model == "htdemucs_6s":
+                candidate_result = json.loads(candidate["result"] or "{}")
+                if "guitar" not in (candidate_result.get("separation") or {}).get("midi_stems", []):
+                    continue
+            duplicate = candidate
+            break
         if duplicate:
             shutil.rmtree(job_dir, ignore_errors=True)
             return {"id": duplicate["id"], "status": "done", "reused": True}
@@ -827,6 +847,23 @@ def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], a
     return completed, failures
 
 
+def transcribe_guitar_tab(job_id: str, directory: Path) -> tuple[list[str], dict[str, str]]:
+    output_dir = directory / "stem-midi"
+    output_dir.mkdir(mode=0o700, exist_ok=True)
+    source = directory / "stems" / "guitar.wav"
+    if not source.is_file():
+        return [], {"guitar": "六軌分離未產生吉他音軌"}
+    update_job(job_id, progress=88, message="只分析吉他獨立軌，產生連續 TAB")
+    try:
+        run_command([
+            str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(source),
+            str(output_dir / "guitar.json"), str(output_dir / "guitar.mid"),
+        ], timeout=1800)
+        return ["guitar"], {}
+    except Exception as exc:
+        return [], {"guitar": str(exc)[-300:]}
+
+
 def transcribe_lyrics(job_id: str, audio: Path, directory: Path) -> dict:
     if not WHISPER_PYTHON.exists():
         raise RuntimeError("歌詞辨識引擎尚未安裝完成")
@@ -887,6 +924,9 @@ def process_job(
         midi_errors: dict[str, str] = {}
         if separate_stems and stem_midi:
             midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, stem_names, analysis_stem, midi_output)
+            chordino_progress = 94
+        elif separate_stems and separation_model == "htdemucs_6s":
+            midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory)
             chordino_progress = 94
         update_job(job_id, note_count=basic.get("note_count", 0), progress=chordino_progress, message="Chordino 辨識和弦與分析 Key")
         chordino_output = directory / "chordino.json"

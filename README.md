@@ -8,6 +8,8 @@ Private music-analysis workspace for a single server. It accepts an upload or a 
 
 The browser provides synchronized multi-stem playback/mixing, method comparison, automatic key estimation, a Capo/play-key view, a chord editor, generated guitar voicings/string notes, and PDF, MIDI, ChordPro, and JSON exports.
 
+Continuous TAB never falls back to the full mix. The one-click guitar TAB option enables the experimental six-stem Demucs model and runs note transcription only on its isolated guitar stem. Six-stem jobs always produce guitar MIDI for TAB; the all-stem MIDI option remains separate.
+
 Users may explicitly publish a completed analysis to the shared library. Public analyses are searchable and ranked by unique signed-in viewers or favorites; exact matching public URL jobs with the same analysis options are reused instead of being processed again. Private jobs remain visible only to their owner and administrators.
 
 Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Singing transcription is approximate and may need manual correction.
@@ -27,6 +29,8 @@ curl http://127.0.0.1:8788/api/health
 ```bash
 https://chord.suika.page
 ```
+
+Cloudflare terminates TLS at the public edge. The application redirects Cloudflare HTTP requests to HTTPS and sends a one-year HSTS policy on HTTPS responses; local loopback HTTP remains available for health checks.
 
 Change the password and signing secret in `.env`, then restart:
 
