@@ -1,0 +1,124 @@
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+from app import main
+from app.guitar_engines import paths
+
+
+class GuitarEngineTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.patches = [patch.object(main, "DATA", self.root), patch.object(main, "DB_PATH", self.root / "db.sqlite3"),
+            patch.object(main, "JOBS", self.root / "jobs"), patch.object(main, "SECRET", "engines-test-" * 4),
+            patch.object(main.executor, "submit"), patch.object(main, "guitar_engine_available", return_value=True)]
+        for item in self.patches:
+            item.start()
+        main.init_db()
+        self.client = TestClient(main.app)
+        self.client.cookies.set(main.COOKIE, main.sign_session("alice@example.com", "google", int(time.time()) + 3600))
+        self.directory = main.JOBS / "song"
+        (self.directory / "stem-midi").mkdir(parents=True)
+        (self.directory / "audio.wav").write_bytes(b"audio")
+        self.baseline = {"guitar_tab": {"source": "original", "status": "done", "profile": "guitar_v2"},
+            "methods": {"chordino": [{"chord": "C", "start": 0, "end": 10}]},
+            "separation": {"stems": ["original"], "midi_stems": ["guitar"]}}
+        for path in paths(self.directory, "basic_pitch"):
+            path.write_text(json.dumps({"notes": [{"midi": 64}], "profile": "guitar_v2"}) if path.suffix == ".json" else "midi")
+        with main.db() as connection:
+            connection.execute("INSERT INTO jobs(id,title,source,status,owner,result,duration,pure_guitar,is_public,created_at,updated_at) VALUES ('song','song','test','done','alice@example.com',?,10,1,1,1,1)", (json.dumps(self.baseline),))
+
+    def tearDown(self):
+        self.client.close()
+        for item in reversed(self.patches):
+            item.stop()
+        self.temp.cleanup()
+
+    def post(self, engine):
+        return self.client.post(f"/api/jobs/song/guitar-analysis?engine={engine}", headers={"Origin": "http://testserver"})
+
+    def test_experiments_are_durable_idempotent_and_cannot_race(self):
+        self.assertEqual(self.post("gaps").json()["status"], "queued")
+        self.assertEqual(self.post("gaps").json()["status"], "queued")
+        self.assertEqual(self.post("tabcnn").status_code, 409)
+        self.assertEqual(main.executor.submit.call_count, 1)
+        with main.db() as connection:
+            self.assertEqual(connection.execute("SELECT engine FROM guitar_tasks").fetchone()[0], "gaps")
+            connection.execute("UPDATE guitar_tasks SET status='working'")
+        with patch.object(main, "USERNAME", "test"), patch.object(main, "PASSWORD", "test"), patch.object(main, "STORAGE_MOUNT", None):
+            main.startup()
+        with main.db() as connection:
+            self.assertEqual(connection.execute("SELECT engine,status FROM guitar_tasks").fetchone()[0], "gaps")
+
+    def test_gaps_completion_leaves_baseline_chords_and_personal_tab_unchanged(self):
+        self.post("gaps")
+        original = paths(self.directory, "basic_pitch")[0].read_bytes()
+        with main.db() as connection:
+            connection.execute("INSERT INTO user_tabs(job_id,viewer,revision,document,updated_at) VALUES ('song','alice',1,'{}',1)")
+        def fake_command(command, **kwargs):
+            self.assertIn("guitar_worker.py", command[1])
+            self.assertIn(str(self.directory / "audio.wav"), command)
+            Path(command[3]).write_text(json.dumps({"profile": "guitar_gaps_v1", "notes": [{"start": 0, "end": .5, "midi": 64}]}))
+            Path(command[4]).write_bytes(b"midi")
+        with patch.object(main, "run_command", side_effect=fake_command):
+            main.process_guitar_task("song")
+        self.assertEqual(paths(self.directory, "basic_pitch")[0].read_bytes(), original)
+        with main.db() as connection:
+            result = json.loads(connection.execute("SELECT result FROM jobs").fetchone()[0])
+            self.assertEqual(connection.execute("SELECT document FROM user_tabs").fetchone()[0], "{}")
+        self.assertEqual(result["guitar_tab"]["profile"], "guitar_v2")
+        self.assertEqual(result["guitar_tab"]["variants"]["gaps"]["status"], "done")
+        self.assertEqual(result["methods"], self.baseline["methods"])
+        self.assertEqual(self.client.get("/api/jobs/song/notes/guitar?engine=gaps").json()["notes"][0]["midi"], 64)
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-midi/gaps").status_code, 200)
+        self.assertEqual(self.post("gaps").json()["status"], "done")
+        self.assertEqual(self.post("tabcnn").json()["status"], "queued")
+
+    def test_failure_of_experiment_does_not_break_ready_baseline(self):
+        self.post("tabcnn")
+        with patch.object(main, "run_command", side_effect=RuntimeError("model failure")):
+            main.process_guitar_task("song")
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=tabcnn").json()["status"], "failed")
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis").json()["status"], "done")
+        self.assertEqual(self.client.get("/api/jobs/song/notes/guitar").status_code, 200)
+
+    def test_switching_failed_engines_cannot_bypass_daily_quota(self):
+        with patch.object(main, "DAILY_JOB_LIMIT", 2):
+            self.assertEqual(self.post("gaps").status_code, 202)
+            with main.db() as connection:
+                connection.execute("UPDATE guitar_tasks SET status='failed'")
+            self.assertEqual(self.post("tabcnn").status_code, 202)
+            with main.db() as connection:
+                connection.execute("UPDATE guitar_tasks SET status='failed'")
+            self.assertEqual(self.post("gaps").status_code, 429)
+        with main.db() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM guitar_submissions").fetchone()[0], 2)
+
+    def test_failure_status_survives_work_on_another_engine(self):
+        self.post("tabcnn")
+        with patch.object(main, "run_command", side_effect=RuntimeError("model failure")):
+            main.process_guitar_task("song")
+        self.post("gaps")
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=tabcnn").json()["status"], "failed")
+
+    def test_invalid_engine_csrf_permissions_and_uninstalled_models(self):
+        self.assertEqual(self.post("../gaps").status_code, 400)
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=unknown").status_code, 400)
+        self.assertEqual(self.client.post("/api/jobs/song/guitar-analysis?engine=gaps").status_code, 403)
+        with patch.object(main, "guitar_engine_available", return_value=False):
+            self.assertEqual(self.post("gaps").status_code, 503)
+        self.client.cookies.set(main.COOKIE, main.sign_session("bob@example.com", "google", int(time.time()) + 3600))
+        self.assertEqual(self.post("gaps").status_code, 404)
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-midi/gaps").status_code, 404)
+        with main.db() as connection:
+            connection.execute("UPDATE jobs SET is_public=0")
+        self.assertEqual(self.client.get("/api/jobs/song/notes/guitar?engine=gaps").status_code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()

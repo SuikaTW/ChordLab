@@ -33,6 +33,8 @@ class TabDocument(BaseModel):
     voice: Literal["all", "high", "low"] = "all"
     position: Literal["auto", "open", "middle", "high"] = "auto"
     density: Literal["clean", "full"] = "clean"
+    source_engine: Literal["basic_pitch", "gaps", "tabcnn"] = "basic_pitch"
+    fingering_mode: Literal["model", "playable"] = "model"
     rhythm: TabRhythm = Field(default_factory=TabRhythm)
 
     @model_validator(mode="after")

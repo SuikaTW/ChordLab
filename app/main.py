@@ -43,6 +43,7 @@ from app.light_tasks import LightTaskPool, PoolBusy
 from app.preparation import DownloadPreparation
 from app.tab_models import TabDocument
 from app.chord_comparison import compare_chords
+from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,7 @@ STORAGE_MOUNT = Path(os.getenv("CHORDLAB_STORAGE_MOUNT", "")).expanduser() if os
 DB_PATH = DATA / "chordlab.sqlite3"
 STATIC = ROOT / "app" / "static"
 BASIC_PYTHON = ROOT / ".venv-basic" / "bin" / "python"
+GUITAR_PYTHON = ROOT / ".venv-guitar" / "bin" / "python"
 CHORDINO_PYTHON = ROOT / ".venv-chordino" / "bin" / "python"
 BTC_PYTHON = ROOT / ".venv-btc" / "bin" / "python"
 BTC_MODEL = ROOT / "vendor/btc/models/btc_model_large_voca.pt"
@@ -260,6 +262,19 @@ def init_db() -> None:
             job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
             status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1,
             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
+        guitar_columns = {row[1] for row in connection.execute("PRAGMA table_info(guitar_tasks)")}
+        if "engine" not in guitar_columns:
+            connection.execute("ALTER TABLE guitar_tasks ADD COLUMN engine TEXT NOT NULL DEFAULT 'basic_pitch'")
+        had_submissions = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='guitar_submissions'").fetchone()
+        # Keep an append-only quota record: switching failed engines (or deleting
+        # a song) must not erase previous CPU requests from the daily allowance.
+        connection.execute("""CREATE TABLE IF NOT EXISTS guitar_submissions (
+            id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, owner TEXT NOT NULL,
+            engine TEXT NOT NULL, created_at INTEGER NOT NULL)""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_guitar_submissions_owner_time ON guitar_submissions(owner,created_at)")
+        if not had_submissions:
+            connection.execute("""INSERT INTO guitar_submissions(job_id,owner,engine,created_at)
+                SELECT t.job_id,j.owner,t.engine,t.created_at FROM guitar_tasks t JOIN jobs j ON j.id=t.job_id""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner_status ON jobs(owner, status)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_public_status ON jobs(is_public, status, public_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_job_views_rank ON job_views(job_id, viewed_at)")
@@ -1056,12 +1071,19 @@ def admin_audit_log(request: Request) -> list[dict]:
 
 
 @app.get("/api/jobs/{job_id}/notes/{track}")
-def get_track_notes(request: Request, job_id: str, track: str) -> dict:
+def get_track_notes(request: Request, job_id: str, track: str, engine: str = "basic_pitch") -> dict:
     row = accessible_job(request, job_id)
     if not row["result"]:
         raise HTTPException(404, "尚無音符結果")
     result = json.loads(row["result"])
     separation = result.get("separation") or {}
+    if engine not in GUITAR_ENGINES or engine != "basic_pitch" and track != "guitar":
+        raise HTTPException(400, "未知的吉他辨識引擎")
+    if track == "guitar" and engine != "basic_pitch":
+        notes_path, _ = guitar_paths(JOBS / job_id, engine)
+        path = job_file(job_id, str(notes_path.relative_to(JOBS / job_id)))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return {"source": track, **payload}
     if track == separation.get("analysis_stem") or track == "analysis":
         return {"source": separation.get("analysis_stem", "original"), "notes": result.get("notes", [])}
     if track not in set(separation.get("midi_stems", [])):
@@ -1111,34 +1133,65 @@ def guitar_uses_original(row: sqlite3.Row, result: dict) -> bool:
 
 
 @app.get("/api/jobs/{job_id}/guitar-analysis")
-def guitar_task_status(request: Request, job_id: str) -> dict:
+def guitar_task_status(request: Request, job_id: str, engine: str = "basic_pitch") -> dict:
+    if engine not in GUITAR_ENGINES:
+        raise HTTPException(400, "未知的吉他辨識引擎")
     row = accessible_job(request, job_id)
     with db() as connection:
-        task = connection.execute("SELECT status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
+        task = connection.execute("SELECT status,engine FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
     result = json.loads(row["result"] or "{}")
     status = (result.get("guitar_tab") or {}).get("status", "done" if "guitar" in (result.get("separation") or {}).get("midi_stems", []) else "unavailable")
     if status == "unavailable" and guitar_uses_original(row, result):
         status = "failed" if (result.get("separation") or {}).get("midi_errors", {}).get("guitar") else "pending"
-    return {"status": task["status"] if task else status}
+    variants = []
+    for name, info in GUITAR_ENGINES.items():
+        notes_path, midi_path = guitar_paths(JOBS / job_id, name)
+        ready = notes_path.is_file() and midi_path.is_file()
+        if name == "basic_pitch":
+            ready = ready or "guitar" in (result.get("separation") or {}).get("midi_stems", [])
+        variants.append({"engine": name, "label": info["label"], "available": guitar_engine_available(ROOT, name), "ready": ready})
+        if name == engine and name != "basic_pitch":
+            status = "done" if ready else (result.get("guitar_tab") or {}).get("variants", {}).get(name, {}).get("status", "pending")
+    if task and task["engine"] == engine:
+        status = task["status"]
+    return {"status": status, "engine": engine, "variants": variants,
+            "busy_engine": task["engine"] if task and task["status"] in {"queued", "working"} else None}
+
+
+@app.get("/api/jobs/{job_id}/guitar-midi/{engine}")
+def get_guitar_engine_midi(request: Request, job_id: str, engine: str):
+    row = accessible_job(request, job_id)
+    if engine not in GUITAR_ENGINES:
+        raise HTTPException(400, "未知的吉他辨識引擎")
+    _, path = guitar_paths(JOBS / job_id, engine)
+    return FileResponse(job_file(job_id, str(path.relative_to(JOBS / job_id))), media_type="audio/midi",
+                        filename=f"{safe_title(row['title'])}-{engine}.mid")
 
 
 @app.post("/api/jobs/{job_id}/guitar-analysis", status_code=202)
-def start_guitar_task(request: Request, job_id: str) -> dict:
+def start_guitar_task(request: Request, job_id: str, engine: str = "basic_pitch") -> dict:
     row = editable_job(request, job_id)
+    if engine not in GUITAR_ENGINES:
+        raise HTTPException(400, "未知的吉他辨識引擎")
+    if not guitar_engine_available(ROOT, engine):
+        raise HTTPException(503, "這個吉他辨識引擎尚未安裝")
     result = json.loads(row["result"] or "{}")
     separation = result.get("separation") or {}
     original = guitar_uses_original(row, result)
     if row["status"] != "done" or not original and "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
         raise HTTPException(400, "這首歌沒有可分析的吉他分軌")
-    if "guitar" in separation.get("midi_stems", []):
+    notes_path, midi_path = guitar_paths(JOBS / job_id, engine)
+    if (engine == "basic_pitch" and "guitar" in separation.get("midi_stems", [])) or notes_path.is_file() and midi_path.is_file():
         return {"status": "done"}
     job_file(job_id, "audio.wav" if original else "stems/guitar.wav")
     with job_submission_lock:
         with db() as connection:
             task = connection.execute("SELECT * FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
-            if task and task["status"] in {"queued", "working", "done"}:
+            if task and task["status"] in {"queued", "working"}:
+                if task["engine"] != engine:
+                    raise HTTPException(409, "這首歌已有另一個 TAB 分析，請等它完成")
                 return {"status": task["status"]}
-            if task and task["attempts"] >= 3:
+            if task and task["engine"] == engine and task["attempts"] >= 3:
                 raise HTTPException(429, "已重試三次，請聯絡管理員")
             active = connection.execute("""SELECT
                 (SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')) +
@@ -1146,12 +1199,15 @@ def start_guitar_task(request: Request, job_id: str) -> dict:
             if active >= MAX_ACTIVE_PER_USER:
                 raise HTTPException(429, "你的分析工作已達上限，請等待前一個完成")
             if not is_admin(request.state.identity):
-                recent = connection.execute("SELECT COUNT(*) FROM guitar_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.owner=? AND t.created_at>=?", (row["owner"], int(time.time()) - 86400)).fetchone()[0]
+                recent = connection.execute("SELECT COUNT(*) FROM guitar_submissions WHERE owner=? AND created_at>=?", (row["owner"], int(time.time()) - 86400)).fetchone()[0]
                 if recent >= DAILY_JOB_LIMIT:
                     raise HTTPException(429, "今日 TAB 轉錄額度已用完")
             now = int(time.time())
-            connection.execute("""INSERT INTO guitar_tasks(job_id,status,created_at,updated_at) VALUES (?,'queued',?,?)
-                ON CONFLICT(job_id) DO UPDATE SET status='queued',attempts=attempts+1,updated_at=excluded.updated_at""", (job_id, now, now))
+            connection.execute("""INSERT INTO guitar_tasks(job_id,status,engine,created_at,updated_at) VALUES (?,'queued',?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET status='queued',
+                attempts=CASE WHEN guitar_tasks.engine=excluded.engine THEN attempts+1 ELSE 1 END,
+                engine=excluded.engine,created_at=excluded.created_at,updated_at=excluded.updated_at""", (job_id, engine, now, now))
+            connection.execute("INSERT INTO guitar_submissions(job_id,owner,engine,created_at) VALUES (?,?,?,?)", (job_id, row["owner"], engine, now))
         executor.submit(process_guitar_task, job_id)
     return {"status": "queued"}
 
@@ -1162,10 +1218,15 @@ def process_guitar_task(job_id: str) -> None:
         if not initial:
             return
         original = guitar_uses_original(initial, json.loads(initial["result"] or "{}"))
+        task = connection.execute("SELECT engine FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
+        engine = task["engine"] if task else "basic_pitch"
         connection.execute("UPDATE guitar_tasks SET status='working',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
     try:
         with heavy_analysis_slot:
-            if original:
+            if engine != "basic_pitch":
+                stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id,
+                    direct_source=JOBS / job_id / "audio.wav" if original else None, engine=engine)
+            elif original:
                 stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id, direct_source=JOBS / job_id / "audio.wav")
             else:
                 stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id)
@@ -1176,11 +1237,18 @@ def process_guitar_task(job_id: str) -> None:
             if row:
                 result = json.loads(row["result"] or "{}")
                 separation = result.setdefault("separation", {})
-                separation["midi_stems"] = list(dict.fromkeys([*separation.get("midi_stems", []), *stems]))
-                separation.setdefault("midi_errors", {}).update(errors)
-                if status == "done":
-                    separation["midi_errors"].pop("guitar", None)
-                result["guitar_tab"] = {"profile": "guitar_v2" if status == "done" else None, "source": "original" if original else "separated", "status": status}
+                if engine == "basic_pitch":
+                    separation["midi_stems"] = list(dict.fromkeys([*separation.get("midi_stems", []), *stems]))
+                    separation.setdefault("midi_errors", {}).update(errors)
+                    if status == "done":
+                        separation["midi_errors"].pop("guitar", None)
+                    variants = (result.get("guitar_tab") or {}).get("variants")
+                    result["guitar_tab"] = {"profile": "guitar_v2" if status == "done" else None, "source": "original" if original else "separated", "status": status}
+                    if variants:
+                        result["guitar_tab"]["variants"] = variants
+                else:
+                    guitar = result.setdefault("guitar_tab", {"source": "original" if original else "separated", "status": "pending"})
+                    guitar.setdefault("variants", {})[engine] = {"profile": GUITAR_ENGINES[engine]["profile"], "status": status}
                 connection.execute("UPDATE jobs SET result=?,progress=100,message='分析完成',updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
             connection.execute("UPDATE guitar_tasks SET status=?,updated_at=? WHERE job_id=?", (status, int(time.time()), job_id))
     except Exception as exc:
@@ -1663,7 +1731,7 @@ def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], a
     return completed, failures
 
 
-def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | None = None) -> tuple[list[str], dict[str, str]]:
+def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | None = None, engine: str = "basic_pitch") -> tuple[list[str], dict[str, str]]:
     output_dir = directory / "stem-midi"
     output_dir.mkdir(mode=0o700, exist_ok=True)
     source = direct_source if direct_source is not None else directory / "stems" / "guitar.wav"
@@ -1671,6 +1739,17 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
         return [], {"guitar": "找不到純吉他音訊" if direct_source is not None else "六軌分離未產生吉他音軌"}
     update_job(job_id, progress=88, message="辨識純吉他原音，產生 TAB" if direct_source is not None else "只分析吉他獨立軌，產生連續 TAB")
     try:
+        if engine != "basic_pitch":
+            notes_path, midi_path = guitar_paths(directory, engine)
+            temporary_notes, temporary_midi = notes_path.with_suffix(".json.tmp"), midi_path.with_suffix(".mid.tmp")
+            run_command([str(GUITAR_PYTHON), str(ROOT / "tools/guitar_worker.py"), str(source),
+                         str(temporary_notes), str(temporary_midi), "--engine", engine], timeout=1800)
+            payload = json.loads(temporary_notes.read_text(encoding="utf-8"))
+            if payload.get("profile") != GUITAR_ENGINES[engine]["profile"] or not isinstance(payload.get("notes"), list):
+                raise ValueError("Invalid guitar experiment output")
+            temporary_midi.replace(midi_path)
+            temporary_notes.replace(notes_path)
+            return ["guitar"], {}
         run_command([
             str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(source),
             str(output_dir / "guitar.json"), str(output_dir / "guitar.mid"),

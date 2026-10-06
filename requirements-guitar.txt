@@ -1,0 +1,8 @@
+# Python 3.12; install torch separately from the CPU wheel index.
+torch==2.10.0
+librosa==0.11.0
+torchlibrosa==0.1.0
+mido==1.3.3
+matplotlib==3.10.8
+onnxruntime==1.23.2
+piano-transcription-inference @ git+https://github.com/xavriley/piano_transcription_inference.git@7568dc7f78b625e40cf9776e2806d164006610e3

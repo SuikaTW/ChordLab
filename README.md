@@ -23,6 +23,27 @@ Users may explicitly publish a completed analysis to the shared library. Public 
 
 Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Short opening songwriter/composer captions hallucinated as lyrics are filtered; singing transcription remains approximate and may need manual correction.
 
+## Experimental guitar transcription
+
+The guitar TAB engine selector keeps Basic Pitch, GAPS pitch transcription and
+TabCNN/GuitarProFX string estimation as independent versions. Owners/admins can
+queue missing versions and download their MIDI; public viewers can read completed
+versions. No existing baseline, chord edits or personal TAB is overwritten by
+experiment generation. Tasks survive restarts and share the heavy-analysis queue.
+
+GAPS still needs pitch-to-fingering search. TabCNN soft string anchors apply only
+to standard tuning, capo 0 and frets 0–19; playable re-fingering is optional.
+Repeated same-fret plucks may merge in its frame-to-note decoder. Model scores
+are not accuracy probabilities. On two EGSet12 clips, pitch/onset F1 was
+0.837/0.831 for the baseline and 0.984/0.969 for GAPS, but offset timing was not
+uniformly better and TabCNN did not beat baseline pitch transcription. This is
+the authors' benchmark, not an independent blind test. Basic Pitch remains the
+default; new engines remain explicitly experimental.
+
+See [model provenance, licenses and rebuild instructions](vendor/guitar/README.md).
+Models/runtimes stay on SSD; media, experimental predictions and benchmarks stay
+on HDD. `tools/benchmark_guitar.py` scores annotated notes without editing jobs.
+
 ## Dual-engine chord cross-check
 
 Run `bash scripts/install-btc.sh`, then restart the service. New jobs use the official

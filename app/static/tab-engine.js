@@ -27,14 +27,15 @@
       .sort((a, b) => a.start - b.start || b.velocity - a.velocity || a.midi - b.midi);
     const prepared = [], lastByPitch = new Map();
     for (const note of sorted) {
-      const previous = lastByPitch.get(note.midi);
+      const pitchKey = Number.isInteger(note.model_string) ? `${note.midi}:${note.model_string}` : note.midi;
+      const previous = lastByPitch.get(pitchKey);
       // Only deduplicate essentially identical onsets, never merge repeated plucks.
       if (previous && note.start - previous.start < .008) {
         previous.end = Math.max(previous.end, note.end);
         continue;
       }
       prepared.push(note);
-      lastByPitch.set(note.midi, note);
+      lastByPitch.set(pitchKey, note);
     }
     return prepared;
   }
@@ -53,7 +54,8 @@
     const prepared = prepare(notes, clean), groups = [];
     for (const note of prepared) {
       const last = groups[groups.length - 1];
-      if (last && note.start - last.start <= .025 && !last.notes.some((n) => n.midi === note.midi)) {
+      if (last && note.start - last.start <= .025 && !last.notes.some((n) =>
+        n.midi === note.midi && (!Number.isInteger(note.model_string) || n.model_string === note.model_string))) {
         last.notes.push(note);
       } else {
         groups.push({ start: note.start, notes: [note] });
@@ -103,8 +105,15 @@
             const crossing = candidate.placed.filter((n) => n.midi < note.midi && n.string > string).length;
             const movement = fret > 0 ? Math.abs(fret - candidate.position) * .12 : 0;
             const preference = range ? Math.max(0, range[0] - fret, fret - range[1]) * 2 : 0;
+            const validHint = options.useModelFingering && (!options.tuning || options.tuning === "standard") && capo === 0 &&
+              Number.isInteger(note.model_string) && note.model_string >= 0 && note.model_string < 6 &&
+              Number.isInteger(note.model_fret) && note.model_fret >= 0 && note.model_fret <= 19 &&
+              tuning[note.model_string] + note.model_fret === note.midi;
+            // A soft anchor, not a guarantee of the original performer's choice.
+            const hintCost = validHint && string !== note.model_string ?
+              3 * Math.max(0, Math.min(1, Number(note.fingering_score) || 0)) : 0;
             const cost = candidate.cost + fret * .025 + movement + crossing * 3 +
-              preference + spanCost(placed) - spanCost(candidate.placed) +
+              preference + hintCost + spanCost(placed) - spanCost(candidate.placed) +
               (overlap && old.midi !== note.midi ? .7 : 0);
             const active = [...candidate.active];
             active[string] = placedNote;

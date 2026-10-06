@@ -1,6 +1,29 @@
 import "../app/static/tab-engine.js";
 
 const { assign } = globalThis.ChordLabTab;
+Deno.test("model string anchors are soft, pitch-checked and tuning/capo aware", () => {
+  const source = [{ ...note(64), model_string: 3, model_fret: 9, fingering_score: .99 }];
+  assert(assign(source, { useModelFingering: true }).notes[0].string === 3, "Use valid string evidence");
+  assert(assign(source, { useModelFingering: false }).notes[0].string === 5, "Playable mode remains independent");
+  const invalid = [{ ...source[0], model_fret: 8 }];
+  assert(assign(invalid, { useModelFingering: true }).notes[0].string === 5, "Do not apply inconsistent hints");
+  const capo = assign(source, { useModelFingering: true, capo: 1 });
+  const plain = assign(source, { capo: 1 });
+  assert(capo.notes[0].string === plain.notes[0].string, "Ignore fixed-standard model hints under capo");
+  const drop = assign(source, { useModelFingering: true, tuning: "drop_d" });
+  assert(drop.notes[0].string === assign(source, { tuning: "drop_d" }).notes[0].string, "Ignore hints under alternate tuning");
+  playable(capo);
+  playable(drop);
+});
+Deno.test("unisons on two model strings survive deduplication and grouping", () => {
+  const result = assign([
+    { ...note(64), model_string: 4, model_fret: 5, fingering_score: .99 },
+    { ...note(64), model_string: 5, model_fret: 0, fingering_score: .99 },
+  ], { useModelFingering: true });
+  assert(result.notes.length === 2, "Two strings can play the same pitch");
+  assert(new Set(result.notes.map((n) => n.string)).size === 2, "Unison needs distinct strings");
+  playable(result);
+});
 Deno.test("capo must not extend the physical fretboard beyond 24 frets", () => {
   const invalid = assign([note(99)], { capo: 11 });
   assert(invalid.notes.length === 0, "Capo does not create additional frets");

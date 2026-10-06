@@ -439,6 +439,8 @@ function renderJobs() {
 
 async function openJob(id, isPublic = false, reveal = false) {
   if (!TabStudio.canLeave()) return;
+  state.tabEngine = "basic_pitch";
+  $("#tabEngine").value = "basic_pitch";
   TabStudio.reset(id);
   const requestId = ++state.openRequest;
   clearInterval(state.poller);
@@ -938,22 +940,25 @@ function renderCapo() {
 }
 
 async function loadContinuousTab() {
-  if (!state.current?.result || state.tabJob === state.current.id) return;
+  const engine = state.tabEngine || "basic_pitch";
+  if (!state.current?.result || state.tabJob === `${state.current.id}:${engine}`) return;
   const jobId = state.current.id, separation = state.current.result.separation || {};
-  state.tabJob = jobId;
+  state.tabJob = `${jobId}:${engine}`;
   state.tabSource = "unavailable";
-  const hasGuitar = (separation.midi_stems || []).includes("guitar");
+  state.tabNotes = [];
+  const hasGuitar = engine === "basic_pitch" ? (separation.midi_stems || []).includes("guitar") :
+    state.current.result.guitar_tab?.variants?.[engine]?.status === "done";
   try {
     const [payload] = await Promise.all([
-      hasGuitar ? api(`/api/jobs/${jobId}/notes/guitar`) : Promise.resolve(null),
+      hasGuitar ? api(`/api/jobs/${jobId}/notes/guitar?engine=${engine}`) : Promise.resolve(null),
       TabStudio.load(jobId),
     ]);
-    if (state.current?.id !== jobId) return;
+    if (state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine) return;
     state.tabNotes = payload?.notes || [];
     state.tabProfile = payload?.profile || "general";
     state.tabSource = payload ? "guitar" : "unavailable";
   } catch (error) {
-    if (state.current?.id !== jobId) return;
+    if (state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine) return;
     state.tabJob = null;
     toast(error.message, true);
   }
@@ -963,7 +968,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=4");
+    const worker = new Worker("/static/tab-worker.js?v=5");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
@@ -999,6 +1004,7 @@ function assignTabNotes(notes) {
         capo: state.capo,
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
+        useModelFingering: state.tabEngine === "tabcnn" && $("#tabFingering").value === "model",
       },
     });
   });

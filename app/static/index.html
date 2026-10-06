@@ -113,12 +113,14 @@
 
           <section id="fullTabPanel" class="full-tab-panel result-hidden hidden" data-result-panel="tab">
             <div class="panel-title"><div><h3>吉他六線譜</h3></div><span id="tabSource" class="save-state"></span></div>
+            <div class="tab-settings"><label>辨識 <select id="tabEngine"><option value="basic_pitch">原版</option><option value="gaps">GAPS 音符（實驗）</option><option value="tabcnn">TabCNN 弦位（實驗）</option></select></label><a id="tabEngineMidi" class="text-button hidden">下載此版本 MIDI</a></div>
             <div class="tab-toolbar"><button id="guitarPreview" type="button" class="secondary">試聽吉他</button><button id="generateGuitarTab" type="button" class="primary compact hidden">產生 TAB</button><label class="mini-check"><input id="tabEditMode" type="checkbox">編輯</label><button id="tabSave" type="button" class="secondary" disabled>儲存我的版本</button><button id="tabUndo" type="button" class="text-button" disabled>復原</button><button id="tabOriginal" type="button" class="text-button">原始譜</button><span id="tabSaveStatus" role="status"></span></div>
             <div id="guitarPreviewPanel" class="guitar-preview hidden"><audio id="guitarPreviewPlayer" controls preload="none" playsinline></audio><small>20 秒吉他片段</small></div>
             <p id="tabWarnings" class="tab-warnings hidden" role="status"></p>
             <details class="tab-options"><summary>調弦與譜面設定</summary>
               <div class="tab-settings"><label>調弦 <select id="tabTuning"><option value="standard">標準 E A D G B e</option><option value="drop_d">Drop D</option><option value="dadgad">DADGAD</option><option value="half_down">降半音</option><option value="whole_down">降全音</option></select></label><div class="tab-density" aria-label="TAB 顯示密度"><button class="active" data-tab-density="clean">簡潔</button><button data-tab-density="full">完整</button></div></div>
               <div class="tab-settings"><label>聲部 <select id="tabVoice"><option value="all">全部</option><option value="high">同時起音取最高音</option><option value="low">同時起音取最低音</option></select></label><label>把位 <select id="tabPosition"><option value="auto">自動</option><option value="open">0–4 格</option><option value="middle">5–9 格</option><option value="high">9–14 格</option></select></label></div>
+              <div id="tabFingeringOptions" class="tab-settings hidden"><label>指法 <select id="tabFingering"><option value="model">參考模型弦位</option><option value="playable">重新配置易彈把位</option></select></label><small>模型弦位僅適用標準調弦、Capo 0；重複撥同一格可能合併。</small></div>
               <div class="tab-settings"><label>BPM <input id="tabBpm" type="number" min="30" max="300" step="0.1" value="120"></label><label>每小節拍數 <select id="tabMeter"><option value="4">4</option><option value="3">3</option><option value="6">6</option></select></label><label>第一拍（秒）<input id="tabOffset" type="number" min="0" max="1200" step="0.01" value="0"></label><button id="tabAutoRhythm" type="button" class="text-button">自動拍點</button></div>
               <small>拍點與小節起點為估計，可調 BPM 和第一拍。聲部篩選不會真正分開兩把吉他。</small>
             </details>
@@ -143,10 +145,10 @@
   </main>
   <div id="toast" class="toast" role="status"></div>
   <dialog id="tabNoteDialog"><form id="tabNoteForm"><h3>修正音符</h3><p id="tabEditInfo"></p><div class="time-fields"><label>弦<select id="tabEditString"><option value="5">第 1 弦</option><option value="4">第 2 弦</option><option value="3">第 3 弦</option><option value="2">第 4 弦</option><option value="1">第 5 弦</option><option value="0">第 6 弦</option></select></label><label>格數<input id="tabEditFret" type="number" min="0" max="24" step="1" required></label></div><p id="tabEditPitch"></p><div class="editor-actions"><button id="tabDeleteNote" type="button" class="danger-text">刪除</button><button id="tabCloseDialog" type="button" class="text-button">取消</button><button type="submit" class="secondary">套用</button></div></form></dialog>
-  <script src="/static/tab-engine.js?v=4" defer></script>
+  <script src="/static/tab-engine.js?v=5" defer></script>
   <script src="/static/tab-layout.js?v=2" defer></script>
-  <script src="/static/tab-studio.js?v=3" defer></script>
+  <script src="/static/tab-studio.js?v=4" defer></script>
   <script src="/static/chord-theory.js?v=1" defer></script>
-  <script src="/static/app.js?v=30" defer></script>
+  <script src="/static/app.js?v=31" defer></script>
 </body>
 </html>

@@ -24,10 +24,32 @@ const TabStudio = (() => {
     voice: $("#tabVoice").value,
     position: $("#tabPosition").value,
     density: state.tabDensity,
+    source_engine: state.tabEngine || "basic_pitch",
+    fingering_mode: $("#tabFingering").value,
   });
   const key = () => JSON.stringify(context());
 
   function bind() {
+    $("#tabEngine").addEventListener("change", async () => {
+      const previous = state.tabEngine || "basic_pitch";
+      if (!canLeave()) {
+        $("#tabEngine").value = previous;
+        return;
+      }
+      state.tabEngine = $("#tabEngine").value;
+      state.tabCancel?.();
+      state.tabRender = (state.tabRender || 0) + 1;
+      reset(jobId);
+      state.tabJob = null;
+      state.tabSource = "unavailable";
+      state.tabNotes = [];
+      await loadContinuousTab();
+    });
+    $("#tabFingering").addEventListener("change", () => {
+      if (!reconfigure()) return;
+      signature = "";
+      render();
+    });
     $("#continuousTab").addEventListener("click", (event) => {
       const button = event.target.closest("[data-note-index]");
       if (!button) return;
@@ -144,6 +166,7 @@ const TabStudio = (() => {
       $("#capoSelect").value = String(previous.capo);
       $("#tabVoice").value = previous.voice;
       $("#tabPosition").value = previous.position;
+      $("#tabFingering").value = previous.fingering_mode || "model";
       $$("[data-tab-density]").forEach((button) =>
         button.classList.toggle("active", button.dataset.tabDensity === previous.density)
       );
@@ -180,6 +203,9 @@ const TabStudio = (() => {
     $("#tabWarnings").classList.add("hidden");
     $("#tabNoteSummary").textContent = "";
     $("#tabSource").textContent = "";
+    $("#tabEngineMidi").classList.add("hidden");
+    $("#tabEngineMidi").removeAttribute("href");
+    $("#tabFingeringOptions").classList.toggle("hidden", state.tabEngine !== "tabcnn");
     controls();
     $("#generateGuitarTab").classList.add("hidden");
     $("#guitarPreview").classList.add("hidden");
@@ -193,17 +219,18 @@ const TabStudio = (() => {
   }
   async function load(id) {
     const expectedSession = session;
+    const engine = state.tabEngine || "basic_pitch";
     setRhythm();
     const [personal, task] = await Promise.all([
       api(`/api/jobs/${id}/tab`),
-      api(`/api/jobs/${id}/guitar-analysis`),
+      api(`/api/jobs/${id}/guitar-analysis${engine === "basic_pitch" ? "" : `?engine=${engine}`}`),
     ]);
     if (jobId !== id || expectedSession !== session) return;
     revision = personal.revision;
-    savedDocument = personal.document;
+    savedDocument = personal.document && (personal.document.source_engine || "basic_pitch") === engine ? personal.document : null;
     if (savedDocument) applyDocument(savedDocument);
-    taskControls(task.status);
-    if (["queued", "working"].includes(task.status)) pollTask(id);
+    taskControls(task.status, task);
+    if (["queued", "working"].includes(task.status) || task.busy_engine) pollTask(id, engine);
     render();
   }
   function applyDocument(document) {
@@ -215,6 +242,7 @@ const TabStudio = (() => {
     $("#tabTuning").value = state.tabTuning;
     $("#tabVoice").value = document.voice;
     $("#tabPosition").value = document.position;
+    $("#tabFingering").value = document.fingering_mode || "model";
     $$("[data-tab-density]").forEach((button) =>
       button.classList.toggle("active", button.dataset.tabDensity === state.tabDensity)
     );
@@ -223,7 +251,7 @@ const TabStudio = (() => {
     renderCapo();
     renderTimeline();
   }
-  function taskControls(status) {
+  function taskControls(status, task = {}) {
     const result = state.current?.result,
       source = state.current?.pure_guitar || result?.guitar_tab?.source === "original",
       has = source || (result?.separation?.all_stems || result?.separation?.stems || []).includes("guitar");
@@ -231,46 +259,59 @@ const TabStudio = (() => {
     const button = $("#generateGuitarTab"),
       pending = has && (["pending", "queued", "working", "failed", "unavailable"].includes(status));
     button.classList.toggle("hidden", !pending || !state.current?.mine && !state.viewer?.admin);
-    button.disabled = ["queued", "working"].includes(status);
+    const engine = state.tabEngine || "basic_pitch";
+    const unavailable = task.variants?.find((variant) => variant.engine === engine)?.available === false;
+    button.disabled = ["queued", "working"].includes(status) || !!task.busy_engine || unavailable;
     button.textContent =
       { pending: "產生 TAB", queued: "TAB 排隊中", working: "正在轉譜…", failed: "重試 TAB" }[status] ||
       "產生 TAB";
+    if (unavailable) button.textContent = "引擎尚未安裝";
+    else if (task.busy_engine && task.busy_engine !== engine) button.textContent = "等待另一版本完成";
+    for (const variant of task.variants || []) {
+      const option = [...$("#tabEngine").options].find((option) => option.value === variant.engine);
+      if (option) option.disabled = !variant.available && !variant.ready;
+    }
+    const download = $("#tabEngineMidi");
+    download.classList.toggle("hidden", status !== "done");
+    if (status === "done") download.href = `/api/jobs/${jobId}/guitar-midi/${engine}`;
+    else download.removeAttribute("href");
   }
   async function generate() {
     const id = jobId;
+    const engine = state.tabEngine || "basic_pitch";
     $("#generateGuitarTab").disabled = true;
     try {
-      const result = await api(`/api/jobs/${id}/guitar-analysis`, { method: "POST" });
-      if (jobId !== id) return;
+      const result = await api(`/api/jobs/${id}/guitar-analysis${engine === "basic_pitch" ? "" : `?engine=${engine}`}`, { method: "POST" });
+      if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
       taskControls(result.status);
-      pollTask(id);
+      pollTask(id, engine);
       loadQueueStatus();
     } catch (error) {
-      if (jobId === id) {
+      if (jobId === id && (state.tabEngine || "basic_pitch") === engine) {
         $("#generateGuitarTab").disabled = false;
         toast(error.message, true);
       }
     }
   }
-  function pollTask(id) {
+  function pollTask(id, engine = state.tabEngine || "basic_pitch") {
     clearTimeout(taskTimer);
     taskTimer = setTimeout(async () => {
-      if (jobId !== id) return;
+      if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
       if (document.hidden) {
-        pollTask(id);
+        pollTask(id, engine);
         return;
       }
       try {
-        const task = await api(`/api/jobs/${id}/guitar-analysis`);
-        if (jobId !== id) return;
-        taskControls(task.status);
-        if (["queued", "working"].includes(task.status)) {
-          pollTask(id);
+        const task = await api(`/api/jobs/${id}/guitar-analysis${engine === "basic_pitch" ? "" : `?engine=${engine}`}`);
+        if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
+        taskControls(task.status, task);
+        if (["queued", "working"].includes(task.status) || task.busy_engine) {
+          pollTask(id, engine);
           return;
         }
         if (task.status === "done") {
           const current = await api(`/api/jobs/${id}?include_notes=false`);
-          if (jobId !== id) return;
+          if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
           state.current = current;
           state.tabJob = null;
           await loadContinuousTab();
@@ -278,9 +319,9 @@ const TabStudio = (() => {
           loadQueueStatus();
         }
       } catch (error) {
-        if (jobId === id) {
+        if (jobId === id && (state.tabEngine || "basic_pitch") === engine) {
           toast(error.message, true);
-          pollTask(id);
+          pollTask(id, engine);
         }
       }
     }, 2500);
@@ -361,7 +402,9 @@ const TabStudio = (() => {
     } 小節${rhythm.manual ? "" : "（估計）"}`;
     $("#tabSource").textContent = loadedDocument
       ? "我的版本"
-      : state.current.result.guitar_tab?.source === "original"
+      : state.tabEngine === "gaps" ? "GAPS · 實驗"
+      : state.tabEngine === "tabcnn" ? "TabCNN · 實驗"
+      : state.current.pure_guitar || state.current.result.guitar_tab?.source === "original"
       ? "純吉他"
       : "吉他分離軌";
     const warning = [];
