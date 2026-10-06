@@ -225,12 +225,11 @@ const TabStudio = (() => {
   }
   function taskControls(status) {
     const result = state.current?.result,
-      source = result?.guitar_tab?.source === "original",
+      source = state.current?.pure_guitar || result?.guitar_tab?.source === "original",
       has = source || (result?.separation?.all_stems || result?.separation?.stems || []).includes("guitar");
     $("#guitarPreview").classList.toggle("hidden", !has);
     const button = $("#generateGuitarTab"),
-      pending = ["pending", "queued", "working", "failed"].includes(status) ||
-        status === "unavailable" && has && !source;
+      pending = has && (["pending", "queued", "working", "failed", "unavailable"].includes(status));
     button.classList.toggle("hidden", !pending || !state.current?.mine && !state.viewer?.admin);
     button.disabled = ["queued", "working"].includes(status);
     button.textContent =
@@ -308,7 +307,7 @@ const TabStudio = (() => {
     if (state.resultView !== "tab" || state.page !== "workspace") return;
     if (state.tabSource !== "guitar" && !loadedDocument) {
       $("#continuousTab").innerHTML =
-        '<div class="tab-unavailable"><b>尚未產生吉他譜</b><span>先試聽吉他音軌，再選「產生 TAB」。沒有吉他軌時，請重新選擇吉他分析。</span></div>';
+        `<div class="tab-unavailable"><b>尚未產生吉他譜</b><span>${state.current.pure_guitar || state.current.result.guitar_tab?.source === "original" ? "可直接從純吉他原音產生 TAB；若轉錄失敗，請按上方按鈕重試。" : "先試聽吉他音軌，再選「產生 TAB」。沒有吉他軌時，請重新選擇吉他分析。"}</span></div>`;
       return;
     }
     if (signature === key()) {

@@ -91,7 +91,7 @@ class GuitarJobTests(unittest.TestCase):
              patch.object(main, "transcribe_guitar_tab", return_value=(["guitar"], {})) as guitar:
             main.process_job(job_id, "url", "test", pure_guitar=True)
             separation.assert_not_called()
-            guitar.assert_called_once_with(job_id, directory, direct_source=original)
+            guitar.assert_called_once_with(job_id, directory, direct_source=directory / "audio.wav")
         with main.db() as connection:
             row = connection.execute("SELECT status,result FROM jobs WHERE id=?", (job_id,)).fetchone()
         self.assertEqual(row["status"], "done")
@@ -234,6 +234,32 @@ class GuitarJobTests(unittest.TestCase):
             row = c.execute("SELECT result,status FROM jobs WHERE id=?", (job_id,)).fetchone()
         self.assertEqual(row["status"], "done")
         self.assertEqual(json.loads(row["result"])["guitar_tab"]["status"], "pending")
+
+    def test_original_review_mode_defers_and_failure_is_retryable(self):
+        for review in (True, False):
+            with self.subTest(review=review):
+                job_id = f"original-review-{review}"
+                directory = self.jobs / job_id
+                directory.mkdir()
+                (directory / "source.webm").touch()
+                with main.db() as c:
+                    c.execute("INSERT INTO jobs(id,title,source,status,pure_guitar,created_at,updated_at) VALUES (?,?,?,'queued',1,1,1)", (job_id, "test", "test"))
+                def fake_command(command, **kwargs):
+                    if any("worker.py" in arg for arg in command):
+                        Path(command[3]).write_text(json.dumps({"notes": [], "chords": [], "note_count": 0, "bpm": 120, "beats": []}))
+                with patch.object(main, "normalize_audio", return_value=9.0), \
+                     patch.object(main, "run_command", side_effect=fake_command), \
+                     patch.object(main, "BTC_ENABLED", False), \
+                     patch.object(main, "transcribe_guitar_tab", return_value=([], {"guitar": "轉錄失敗"})) as guitar:
+                    main.process_job(job_id, "upload", "test", pure_guitar=True, review_guitar=review)
+                    if review:
+                        guitar.assert_not_called()
+                    else:
+                        guitar.assert_called_once_with(job_id, directory, direct_source=directory / "audio.wav")
+                with main.db() as c:
+                    result = json.loads(c.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()[0])
+                self.assertEqual(result["guitar_tab"]["source"], "original")
+                self.assertEqual(result["guitar_tab"]["status"], "pending" if review else "failed")
 
 
 if __name__ == "__main__":

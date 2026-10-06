@@ -115,6 +115,39 @@ class TabApiTests(unittest.TestCase):
         self.assertIn("guitar", result["separation"]["midi_stems"])
         self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis").json()["status"], "done")
 
+    def test_original_guitar_retry_uses_normalized_audio_and_preserves_source(self):
+        result = {**self.result, "separation": {"stems": ["original"], "midi_stems": [], "midi_errors": {"guitar": "轉錄失敗"}},
+                  "guitar_tab": {"source": "original", "status": "unavailable"}}
+        (self.directory / "audio.wav").write_bytes(b"normalized-audio")
+        with main.db() as c:
+            c.execute("UPDATE jobs SET pure_guitar=1,result=? WHERE id='song'", (json.dumps(result),))
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis").json()["status"], "failed")
+        self.login("bob@example.com")
+        self.assertEqual(self.client.post("/api/jobs/song/guitar-analysis", headers={"Origin": "http://testserver"}).status_code, 404)
+        self.login("alice@example.com")
+        self.assertEqual(self.client.post("/api/jobs/song/guitar-analysis", headers={"Origin": "http://testserver"}).status_code, 202)
+        with patch.object(main, "transcribe_guitar_tab", return_value=(["guitar"], {})) as transcribe:
+            main.process_guitar_task("song")
+            transcribe.assert_called_once_with("song", self.directory, direct_source=self.directory / "audio.wav")
+        with main.db() as c:
+            saved = json.loads(c.execute("SELECT result FROM jobs WHERE id='song'").fetchone()[0])
+        self.assertEqual(saved["guitar_tab"]["source"], "original")
+        self.assertEqual(saved["guitar_tab"]["status"], "done")
+        self.assertEqual(saved["methods"], result["methods"])
+        self.assertNotIn("guitar", saved["separation"]["midi_errors"])
+
+    def test_original_guitar_without_source_metadata_still_uses_original_preview(self):
+        result = {"separation": {"stems": ["original"], "midi_stems": []}}
+        (self.directory / "audio.wav").write_bytes(b"normalized-audio")
+        with main.db() as c:
+            c.execute("UPDATE jobs SET pure_guitar=1,result=? WHERE id='song'", (json.dumps(result),))
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis").json()["status"], "pending")
+        def fake_command(command, **kwargs):
+            self.assertIn(str(self.directory / "audio.wav"), command)
+            Path(command[-1]).write_bytes(b"m4a")
+        with patch.object(main, "run_command", side_effect=fake_command):
+            self.assertEqual(self.client.get("/api/jobs/song/guitar-preview").status_code, 200)
+
     def test_optional_light_payload_preserves_original_note_api(self):
         result = dict(self.result, notes=[{"midi": 64, "start": 0, "end": 1}])
         with main.db() as c:

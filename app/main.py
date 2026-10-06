@@ -1106,13 +1106,20 @@ def save_personal_tab(request: Request, job_id: str, document: TabDocument) -> d
     return {"document": payload, "revision": revision + 1}
 
 
+def guitar_uses_original(row: sqlite3.Row, result: dict) -> bool:
+    return bool(row["pure_guitar"]) or (result.get("guitar_tab") or {}).get("source") == "original"
+
+
 @app.get("/api/jobs/{job_id}/guitar-analysis")
 def guitar_task_status(request: Request, job_id: str) -> dict:
     row = accessible_job(request, job_id)
     with db() as connection:
         task = connection.execute("SELECT status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
     result = json.loads(row["result"] or "{}")
-    return {"status": task["status"] if task else (result.get("guitar_tab") or {}).get("status", "done" if "guitar" in (result.get("separation") or {}).get("midi_stems", []) else "unavailable")}
+    status = (result.get("guitar_tab") or {}).get("status", "done" if "guitar" in (result.get("separation") or {}).get("midi_stems", []) else "unavailable")
+    if status == "unavailable" and guitar_uses_original(row, result):
+        status = "failed" if (result.get("separation") or {}).get("midi_errors", {}).get("guitar") else "pending"
+    return {"status": task["status"] if task else status}
 
 
 @app.post("/api/jobs/{job_id}/guitar-analysis", status_code=202)
@@ -1120,11 +1127,12 @@ def start_guitar_task(request: Request, job_id: str) -> dict:
     row = editable_job(request, job_id)
     result = json.loads(row["result"] or "{}")
     separation = result.get("separation") or {}
-    if row["status"] != "done" or "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
+    original = guitar_uses_original(row, result)
+    if row["status"] != "done" or not original and "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
         raise HTTPException(400, "這首歌沒有可分析的吉他分軌")
     if "guitar" in separation.get("midi_stems", []):
         return {"status": "done"}
-    job_file(job_id, "stems/guitar.wav")
+    job_file(job_id, "audio.wav" if original else "stems/guitar.wav")
     with job_submission_lock:
         with db() as connection:
             task = connection.execute("SELECT * FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
@@ -1150,9 +1158,17 @@ def start_guitar_task(request: Request, job_id: str) -> dict:
 
 def process_guitar_task(job_id: str) -> None:
     with db() as connection:
+        initial = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not initial:
+            return
+        original = guitar_uses_original(initial, json.loads(initial["result"] or "{}"))
         connection.execute("UPDATE guitar_tasks SET status='working',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
     try:
-        stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id)
+        with heavy_analysis_slot:
+            if original:
+                stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id, direct_source=JOBS / job_id / "audio.wav")
+            else:
+                stems, errors = transcribe_guitar_tab(job_id, JOBS / job_id)
         status = "done" if "guitar" in stems else "failed"
         with db() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1164,7 +1180,7 @@ def process_guitar_task(job_id: str) -> None:
                 separation.setdefault("midi_errors", {}).update(errors)
                 if status == "done":
                     separation["midi_errors"].pop("guitar", None)
-                result["guitar_tab"] = {"profile": "guitar_v2" if status == "done" else None, "source": "separated", "status": status}
+                result["guitar_tab"] = {"profile": "guitar_v2" if status == "done" else None, "source": "original" if original else "separated", "status": status}
                 connection.execute("UPDATE jobs SET result=?,progress=100,message='分析完成',updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
             connection.execute("UPDATE guitar_tasks SET status=?,updated_at=? WHERE job_id=?", (status, int(time.time()), job_id))
     except Exception as exc:
@@ -1652,7 +1668,7 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
     output_dir.mkdir(mode=0o700, exist_ok=True)
     source = direct_source if direct_source is not None else directory / "stems" / "guitar.wav"
     if not source.is_file():
-        return [], {"guitar": "六軌分離未產生吉他音軌"}
+        return [], {"guitar": "找不到純吉他音訊" if direct_source is not None else "六軌分離未產生吉他音軌"}
     update_job(job_id, progress=88, message="辨識純吉他原音，產生 TAB" if direct_source is not None else "只分析吉他獨立軌，產生連續 TAB")
     try:
         run_command([
@@ -1733,9 +1749,13 @@ def process_job(
         basic = json.loads(basic_output.read_text(encoding="utf-8"))
         midi_stems: list[str] = []
         midi_errors: dict[str, str] = {}
-        if pure_guitar:
-            midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory, direct_source=source)
+        if pure_guitar and not review_guitar:
+            # Decode/normalize once with FFmpeg. Basic Pitch cannot reliably
+            # read yt-dlp WebM/Opus containers directly inside the sandbox.
+            midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory, direct_source=audio)
             chordino_progress = 94
+        elif pure_guitar:
+            pass  # Respect preview-first mode for an original guitar recording too.
         elif separate_stems and stem_midi:
             midi_names = [name for name in stem_names if not (review_guitar and name == "guitar")]
             midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, midi_names, analysis_stem, midi_output)
@@ -1799,7 +1819,7 @@ def process_job(
             "guitar_tab": {
                 "profile": "guitar_v2" if "guitar" in midi_stems else None,
                 "source": "original" if pure_guitar else "separated",
-                "status": "done" if "guitar" in midi_stems else ("pending" if review_guitar and "guitar" in stem_names else "unavailable"),
+                "status": "done" if "guitar" in midi_stems else ("failed" if "guitar" in midi_errors else ("pending" if review_guitar and (pure_guitar or "guitar" in stem_names) else "unavailable")),
             },
             "separation": {
                 "enabled": bool(separate_stems),
@@ -1951,7 +1971,7 @@ def build_audio_mix(job_id: str, selected: list[str]) -> FileResponse:
 async def guitar_preview(request: Request, job_id: str, start: Annotated[float, Query(ge=0, le=1200, allow_inf_nan=False)] = 0) -> FileResponse:
     row = accessible_job(request, job_id)
     result = json.loads(row["result"] or "{}")
-    original = (result.get("guitar_tab") or {}).get("source") == "original"
+    original = guitar_uses_original(row, result)
     separation = result.get("separation") or {}
     if not original and "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
         raise HTTPException(404, "沒有吉他音軌")
