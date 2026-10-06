@@ -11,7 +11,7 @@ function escapeHtml(value){const div=document.createElement('div');div.textConte
 async function api(url, options={}){const response=await fetch(url,options);if(response.status===401){location.href='/login';throw new Error('請重新登入')}if(!response.ok){let detail='操作失敗';try{detail=(await response.json()).detail||detail}catch{}throw new Error(detail)}return response.headers.get('content-type')?.includes('json')?response.json():response}
 
 async function init(){
-  try{const [health,viewer]=await Promise.all([api('/api/health'),api('/api/me')]);state.viewer=viewer;const status=$('#engineStatus');const ready=health.basic_pitch&&health.chordino&&health.demucs&&health.whisper;status.classList.add(ready?'ok':'bad');status.innerHTML=`<i></i>${ready?'分析引擎已就緒':'部分引擎未就緒'}`;}catch{}
+  try{const [health,viewer]=await Promise.all([api('/api/health'),api('/api/me')]);state.viewer=viewer;$('#adminNav').classList.toggle('hidden',!viewer.admin);const status=$('#engineStatus');const ready=health.basic_pitch&&health.chordino&&health.demucs&&health.whisper;status.classList.add(ready?'ok':'bad');status.innerHTML=`<i></i>${ready?'分析引擎已就緒':'部分引擎未就緒'}`;}catch{}
   bindEvents();await Promise.all([loadJobs(),loadQueueStatus()]);setInterval(loadQueueStatus,10000);
 }
 

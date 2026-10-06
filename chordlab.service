@@ -3,7 +3,6 @@ Description=ChordLab private music analysis service
 After=network-online.target
 Wants=network-online.target
 ConditionPathIsMountPoint=/mnt/sdb
-ConditionPathIsMountPoint=/mnt/sdb
 
 [Service]
 Type=simple
@@ -13,7 +12,8 @@ ExecStart=/home/suika/chordlab/.venv/bin/uvicorn app.main:app --host 127.0.0.1 -
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
-PrivateTmp=true
+RestrictRealtime=true
+SystemCallArchitectures=native
 UMask=0077
 
 [Install]

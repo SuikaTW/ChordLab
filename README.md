@@ -23,7 +23,7 @@ The user service listens only on `127.0.0.1:8788`. Put HTTPS authentication/prox
 ```bash
 systemctl --user status chordlab
 journalctl --user -u chordlab -f
-curl http://127.0.0.1:8788/api/health
+curl http://127.0.0.1:8788/healthz
 ```
 
 `chordlab-tunnel.service` runs the persistent Cloudflare Named Tunnel for the public address:
@@ -40,6 +40,16 @@ Change the password and signing secret in `.env`, then restart:
 chmod 600 .env
 systemctl --user restart chordlab
 ```
+
+`/healthz` is the unauthenticated minimal liveness endpoint. `/api/health` includes engine details and requires a signed-in account.
+
+## Administration and public access
+
+Administrators can open `https://chord.suika.page/admin` to inspect server/queue/storage status, manage user roles or blocks, moderate public analyses, review internal job failures, permanently delete completed/failed jobs, and inspect an audit trail. The local password account and emails in `GOOGLE_ADMIN_EMAILS` are configuration-managed administrators; an existing administrator may grant the database-backed administrator role to another signed-in Google account.
+
+For public access, non-administrators default to five newly processed jobs per rolling 24 hours (`CHORDLAB_DAILY_JOB_LIMIT`) and remain subject to the active-job limit. Reusing an existing matching public analysis does not consume a new analysis. Sessions default to seven days (`CHORDLAB_SESSION_DAYS`). `CHORDLAB_APP_HOSTS` restricts accepted HTTP Host values.
+
+Security headers, strict same-origin checks for state-changing browser requests, private cookies, server-side account blocking, owner-only editing, URL port/credential validation, generic user-facing processing errors, and administrator-only diagnostic details are enforced by the application. Keep Cloudflare rate limiting/WAF enabled as an additional edge layer; application controls do not replace OS patching or isolation of untrusted media decoders.
 
 ## Google login
 
@@ -76,6 +86,7 @@ Large per-song artifacts are stored outside the application checkout. `CHORDLAB_
 ## Limits and safety
 
 - URL imports are restricted to the configured public media domains and are checked against private/reserved IP addresses.
+- Uploads are checked beyond their extension: executable/web signatures are rejected, then `ffprobe` verifies the real container and audio stream inside a Bubblewrap sandbox. Files live outside public static paths under server-generated names and are never executed.
 - Playlists are disabled, processing is serialized, and uploads default to 200 MB / 20 minutes.
 - Spotify music links are not downloaded. Upload only audio you are allowed to process.
 - Analysis is probabilistic. Isolated instruments generally produce cleaner Basic Pitch MIDI; Chordino is usually the better first view for a full mix.

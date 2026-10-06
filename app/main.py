@@ -6,13 +6,15 @@ import hmac
 import html
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
 import shutil
 import socket
 import sqlite3
-import subprocess
+# Required for fixed argv calls to bundled analysis binaries; shell execution is never used.
+import subprocess  # nosec B404
 import threading
 import time
 import uuid
@@ -50,10 +52,14 @@ DEMUCS_PYTHON = ROOT / ".venv-demucs" / "bin" / "python"
 WHISPER_PYTHON = ROOT / ".venv-whisper" / "bin" / "python"
 VAMP_PATH = ROOT / "vendor" / "vamp"
 FFMPEG = ROOT / "bin" / "ffmpeg"
+FFPROBE = ROOT / "bin" / "ffprobe"
+BWRAP = Path(shutil.which("bwrap")) if shutil.which("bwrap") else None
 MAX_UPLOAD = int(os.getenv("CHORDLAB_MAX_UPLOAD_MB", "200")) * 1024 * 1024
 MAX_DURATION = int(os.getenv("CHORDLAB_MAX_DURATION_MIN", "20")) * 60
 ANALYSIS_WORKERS = max(1, min(3, int(os.getenv("CHORDLAB_ANALYSIS_WORKERS", "1"))))
 MAX_ACTIVE_PER_USER = max(1, min(10, int(os.getenv("CHORDLAB_MAX_ACTIVE_PER_USER", "2"))))
+DAILY_JOB_LIMIT = max(1, min(100, int(os.getenv("CHORDLAB_DAILY_JOB_LIMIT", "5"))))
+SESSION_DAYS = max(1, min(30, int(os.getenv("CHORDLAB_SESSION_DAYS", "7"))))
 ALLOWED_HOSTS = {
     host.strip().lower()
     for host in os.getenv(
@@ -61,6 +67,15 @@ ALLOWED_HOSTS = {
         "youtube.com,youtu.be,music.youtube.com,soundcloud.com,bandcamp.com,bilibili.com,vimeo.com",
     ).split(",")
     if host.strip()
+}
+APP_HOSTS = {
+    host.strip().lower()
+    for host in os.getenv("CHORDLAB_APP_HOSTS", "chord.suika.page,localhost,127.0.0.1,testserver").split(",")
+    if host.strip()
+}
+SAFE_MEDIA_FORMATS = {
+    "aac", "flac", "matroska", "mov", "mp3", "mp4", "m4a", "ogg", "opus", "wav", "webm",
+    "3gp", "3g2", "mj2",
 }
 USERNAME = os.getenv("CHORDLAB_USERNAME", "")
 PASSWORD = os.getenv("CHORDLAB_PASSWORD", "")
@@ -161,6 +176,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE jobs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
         if "public_at" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN public_at INTEGER")
+        if "error_detail" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN error_detail TEXT")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS job_views (
@@ -181,12 +198,112 @@ def init_db() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                is_blocked INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                UNIQUE(provider, subject)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at, id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner_status ON jobs(owner, status)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_public_status ON jobs(is_public, status, public_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_job_views_rank ON job_views(job_id, viewed_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_job_favorites_rank ON job_favorites(job_id, created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen DESC)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit(created_at DESC)")
+        now = int(time.time())
+        configured_users = [(USERNAME.lower(), "local", USERNAME, 1)] + [
+            (email, "google", email, 1) for email in GOOGLE_ADMIN_EMAILS
+        ]
+        for subject, provider, display_name, admin in configured_users:
+            if not subject:
+                continue
+            key = identity_key({"sub": subject, "provider": provider})
+            connection.execute(
+                """
+                INSERT INTO users(id,subject,provider,display_name,is_admin,is_blocked,created_at,last_seen)
+                VALUES (?,?,?,?,?,0,?,?)
+                ON CONFLICT(id) DO UPDATE SET is_admin=1, last_seen=excluded.last_seen
+                """,
+                (key, subject, provider, display_name, admin, now, now),
+            )
+        for owner_row in connection.execute("SELECT owner, MIN(created_at) AS first_seen, MAX(updated_at) AS last_seen FROM jobs GROUP BY owner"):
+            subject = str(owner_row["owner"] or "legacy").lower()
+            provider = "local" if subject == USERNAME.lower() else ("google" if "@" in subject else "legacy")
+            identity = {"sub": subject, "provider": provider}
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO users(id,subject,provider,display_name,is_admin,is_blocked,created_at,last_seen)
+                VALUES (?,?,?,?,?,0,?,?)
+                """,
+                (
+                    identity_key(identity), subject, provider, subject, int(configured_admin(identity)),
+                    int(owner_row["first_seen"] or now), int(owner_row["last_seen"] or now),
+                ),
+            )
         connection.execute("PRAGMA optimize")
+
+
+def identity_key(identity: dict) -> str:
+    raw = f"{identity['provider']}\0{identity['sub'].lower()}".encode()
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def configured_admin(identity: dict) -> bool:
+    return identity["provider"] == "local" or identity["sub"].lower() in GOOGLE_ADMIN_EMAILS
+
+
+def touch_user(identity: dict, display_name: str = "") -> sqlite3.Row:
+    now = int(time.time())
+    key = identity_key(identity)
+    subject = identity["sub"].lower()
+    with db() as connection:
+        connection.execute(
+            """
+            INSERT INTO users(id,subject,provider,display_name,is_admin,is_blocked,created_at,last_seen)
+            VALUES (?,?,?,?,?,0,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                display_name=CASE WHEN excluded.display_name<>'' THEN excluded.display_name ELSE users.display_name END,
+                is_admin=CASE WHEN excluded.is_admin=1 THEN 1 ELSE users.is_admin END,
+                last_seen=CASE WHEN users.last_seen < excluded.last_seen - 300 THEN excluded.last_seen ELSE users.last_seen END
+            """,
+            (key, subject, identity["provider"], display_name[:120], int(configured_admin(identity)), now, now),
+        )
+        return connection.execute("SELECT * FROM users WHERE id=?", (key,)).fetchone()
+
+
+def audit_admin(actor: dict, action: str, target: str, detail: dict | None = None, connection: sqlite3.Connection | None = None) -> None:
+    values = (actor["sub"], action, target, json.dumps(detail or {}, ensure_ascii=False), int(time.time()))
+    if connection is not None:
+        connection.execute(
+            "INSERT INTO admin_audit(actor,action,target,detail,created_at) VALUES (?,?,?,?,?)", values
+        )
+        return
+    with db() as own_connection:
+        own_connection.execute(
+            "INSERT INTO admin_audit(actor,action,target,detail,created_at) VALUES (?,?,?,?,?)", values
+        )
 
 
 def sign_session(subject: str, provider: str, expires: int) -> str:
@@ -217,28 +334,60 @@ def session_identity(token: str | None) -> dict | None:
 
 
 def is_admin(identity: dict) -> bool:
-    return identity["provider"] == "local" or identity["sub"] in GOOGLE_ADMIN_EMAILS
+    if configured_admin(identity):
+        return True
+    with db() as connection:
+        row = connection.execute("SELECT is_admin FROM users WHERE id=?", (identity_key(identity),)).fetchone()
+    return bool(row and row["is_admin"])
+
+
+def require_admin(request: Request) -> dict:
+    identity = request.state.identity
+    if not is_admin(identity):
+        raise HTTPException(403, "需要管理員權限")
+    return identity
+
+
+def request_origin(request: Request) -> str | None:
+    value = request.headers.get("origin")
+    if value:
+        return value.rstrip("/")
+    referer = request.headers.get("referer")
+    if not referer:
+        return None
+    parsed = urlparse(referer)
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else None
 
 
 @app.middleware("http")
 async def authentication(request: Request, call_next):
-    public = request.url.path in {"/login", "/api/health", "/auth/google", "/auth/google/callback"} or request.url.path.startswith("/static/")
+    public = request.url.path in {"/login", "/healthz", "/auth/google", "/auth/google/callback"} or request.url.path.startswith("/static/")
     if not public:
         identity = session_identity(request.cookies.get(COOKIE))
         if not identity:
             if request.url.path.startswith("/api/"):
                 return JSONResponse({"detail": "請先登入"}, status_code=401)
             return RedirectResponse("/login", status_code=303)
+        user = touch_user(identity)
+        if user["is_blocked"]:
+            if request.url.path.startswith("/api/"):
+                response = JSONResponse({"detail": "此帳號已被管理員停權"}, status_code=403)
+            else:
+                response = RedirectResponse("/login?error=blocked", status_code=303)
+            response.delete_cookie(COOKIE)
+            return response
         request.state.identity = identity
     if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path != "/login":
-        origin = request.headers.get("origin")
-        if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        origin = request_origin(request)
+        if not origin or origin != str(request.base_url).rstrip("/"):
             return JSONResponse({"detail": "來源驗證失敗"}, status_code=403)
     return await call_next(request)
 
 
 @app.middleware("http")
 async def https_policy(request: Request, call_next):
+    if request.url.hostname not in APP_HOSTS:
+        return PlainTextResponse("Invalid host", status_code=400)
     cloudflare_request = bool(request.headers.get("cf-ray"))
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
     if cloudflare_request and forwarded_proto != "https":
@@ -246,6 +395,12 @@ async def https_policy(request: Request, call_next):
     response = await call_next(request)
     if forwarded_proto == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    if not request.url.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-store")
     return response
 
 
@@ -255,6 +410,8 @@ def startup() -> None:
         raise RuntimeError("CHORDLAB_USERNAME, CHORDLAB_PASSWORD and a 32+ character CHORDLAB_SECRET are required")
     if STORAGE_MOUNT and not STORAGE_MOUNT.is_mount():
         raise RuntimeError(f"歌曲資料磁碟尚未掛載：{STORAGE_MOUNT}")
+    if not BWRAP or not BWRAP.is_file() or not FFMPEG.is_file() or not FFPROBE.is_file():
+        raise RuntimeError("分析沙箱、ffmpeg 或 ffprobe 尚未安裝，為避免不安全地解析上傳內容，服務拒絕啟動")
     init_db()
     with db() as connection:
         connection.execute("UPDATE jobs SET status='queued', progress=2, message='服務重啟，已重新加入佇列' WHERE status='working'")
@@ -272,6 +429,11 @@ def startup() -> None:
         )
 
 
+@app.get("/healthz")
+def public_health() -> dict:
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -283,6 +445,8 @@ def health() -> dict:
         "google_login": GOOGLE_ENABLED,
         "analysis_workers": ANALYSIS_WORKERS,
         "storage_ready": not STORAGE_MOUNT or STORAGE_MOUNT.is_mount(),
+        "worker_sandbox": bool(BWRAP and BWRAP.is_file()),
+        "media_probe": FFPROBE.is_file(),
     }
 
 
@@ -290,7 +454,19 @@ def health() -> dict:
 def current_user(request: Request) -> dict:
     identity = request.state.identity
     viewer_key = hashlib.sha256(f"{identity['provider']}:{identity['sub']}".encode()).hexdigest()[:16]
-    return {"key": viewer_key, "admin": is_admin(identity)}
+    since = int(time.time()) - 86400
+    with db() as connection:
+        daily_jobs = connection.execute(
+            "SELECT COUNT(*) FROM jobs WHERE owner=? AND created_at>=?", (identity["sub"], since)
+        ).fetchone()[0]
+    return {
+        "key": viewer_key,
+        "subject": identity["sub"],
+        "provider": identity["provider"],
+        "admin": is_admin(identity),
+        "daily_jobs": daily_jobs,
+        "daily_limit": None if is_admin(identity) else DAILY_JOB_LIMIT,
+    }
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -299,6 +475,7 @@ def login_page(error: str = "") -> str:
         "1": "帳號或密碼錯誤",
         "google": "Google 登入失敗，請再試一次",
         "denied": "這個 Google 帳號沒有使用權限",
+        "blocked": "這個帳號已被管理員停權",
     }
     error_html = f'<p class="login-error">{errors.get(error, "登入失敗")}</p>' if error else ""
     google_html = (
@@ -330,8 +507,12 @@ async def google_callback(request: Request) -> Response:
             return RedirectResponse("/login?error=denied", status_code=303)
     except Exception:
         return RedirectResponse("/login?error=google", status_code=303)
+    user = touch_user({"sub": email, "provider": "google"}, str(identity.get("name") or ""))
+    if user["is_blocked"]:
+        return RedirectResponse("/login?error=blocked", status_code=303)
+    max_age = SESSION_DAYS * 86400
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(COOKIE, sign_session(email, "google", int(time.time()) + 30 * 86400), max_age=30 * 86400, httponly=True, secure=SECURE_COOKIE, samesite="lax")
+    response.set_cookie(COOKIE, sign_session(email, "google", int(time.time()) + max_age), max_age=max_age, httponly=True, secure=SECURE_COOKIE, samesite="lax")
     return response
 
 
@@ -342,6 +523,17 @@ def login(request: Request, username: Annotated[str, Form()], password: Annotate
         peer = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", peer).split(",", 1)[0].strip()
     now = time.time()
     with login_lock:
+        if len(login_attempts) >= 5000:
+            stale_peers = [
+                address for address, stamps in login_attempts.items()
+                if not stamps or now - max(stamps) >= 300
+            ]
+            for address in stale_peers:
+                login_attempts.pop(address, None)
+            if len(login_attempts) >= 5000:
+                oldest_peers = sorted(login_attempts, key=lambda address: max(login_attempts[address]))
+                for address in oldest_peers[: len(login_attempts) - 4999]:
+                    login_attempts.pop(address, None)
         attempts = [stamp for stamp in login_attempts.get(peer, []) if now - stamp < 300]
         login_attempts[peer] = attempts
         if len(attempts) >= 5:
@@ -352,8 +544,11 @@ def login(request: Request, username: Annotated[str, Form()], password: Annotate
         return RedirectResponse("/login?error=1", status_code=303)
     with login_lock:
         login_attempts.pop(peer, None)
+    identity = {"sub": username.lower(), "provider": "local"}
+    touch_user(identity, username)
+    max_age = SESSION_DAYS * 86400
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(COOKIE, sign_session(username, "local", int(time.time()) + 30 * 86400), max_age=30 * 86400, httponly=True, secure=SECURE_COOKIE, samesite="strict")
+    response.set_cookie(COOKIE, sign_session(username, "local", int(time.time()) + max_age), max_age=max_age, httponly=True, secure=SECURE_COOKIE, samesite="strict")
     return response
 
 
@@ -367,6 +562,12 @@ def logout() -> Response:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/admin")
+def admin_page(request: Request) -> FileResponse:
+    require_admin(request)
+    return FileResponse(STATIC / "admin.html")
 
 
 def serialize_job(row: sqlite3.Row, include_result: bool = True) -> dict:
@@ -434,6 +635,15 @@ def accessible_job(request: Request, job_id: str) -> sqlite3.Row:
     return row
 
 
+def editable_job(request: Request, job_id: str) -> sqlite3.Row:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    identity = request.state.identity
+    if not row or (row["owner"] != identity["sub"] and not is_admin(identity)):
+        raise HTTPException(404, "找不到可編輯的分析工作")
+    return row
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(request: Request, job_id: str) -> dict:
     row = accessible_job(request, job_id)
@@ -470,25 +680,27 @@ def list_public_jobs(
     search: Annotated[str, Query(max_length=80)] = "",
     sort: Annotated[str, Query()] = "recent",
 ) -> list[dict]:
-    order_by = {
-        "recent": "COALESCE(j.public_at, j.updated_at) DESC, j.id DESC",
-        "views": "view_count DESC, COALESCE(j.public_at, j.updated_at) DESC",
-        "favorites": "favorite_count DESC, COALESCE(j.public_at, j.updated_at) DESC",
-    }.get(sort)
-    if not order_by:
+    if sort not in {"recent", "views", "favorites"}:
         raise HTTPException(400, "未知的排序方式")
-    query = f"""
+    query = """
         SELECT j.*,
           (SELECT COUNT(*) FROM job_views v WHERE v.job_id=j.id) AS view_count,
           (SELECT COUNT(*) FROM job_favorites f WHERE f.job_id=j.id) AS favorite_count,
           EXISTS(SELECT 1 FROM job_favorites mine WHERE mine.job_id=j.id AND mine.owner=?) AS is_favorite
         FROM jobs j
         WHERE j.is_public=1 AND j.status='done' AND j.title LIKE ?
-        ORDER BY {order_by}
+        ORDER BY
+          CASE WHEN ?='views' THEN view_count END DESC,
+          CASE WHEN ?='favorites' THEN favorite_count END DESC,
+          COALESCE(j.public_at, j.updated_at) DESC,
+          j.id DESC
         LIMIT 60
     """
     with db() as connection:
-        rows = connection.execute(query, (request.state.identity["sub"], f"%{search.strip()}%")).fetchall()
+        rows = connection.execute(
+            query,
+            (request.state.identity["sub"], f"%{search.strip()}%", sort, sort),
+        ).fetchall()
     return [public_summary(row) for row in rows]
 
 
@@ -565,6 +777,203 @@ def toggle_favorite(request: Request, job_id: str) -> dict:
     return {"favorited": favorited, "favorite_count": count}
 
 
+class AdminUserUpdate(BaseModel):
+    is_admin: bool | None = None
+    is_blocked: bool | None = None
+
+
+class AdminVisibilityUpdate(BaseModel):
+    is_public: bool
+
+
+class AdminDeleteJob(BaseModel):
+    confirm: str
+
+
+@app.get("/api/admin/overview")
+def admin_overview(request: Request) -> dict:
+    require_admin(request)
+    now = int(time.time())
+    with db() as connection:
+        users = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        active_users = connection.execute("SELECT COUNT(*) FROM users WHERE last_seen>=?", (now - 7 * 86400,)).fetchone()[0]
+        jobs = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        public_jobs = connection.execute("SELECT COUNT(*) FROM jobs WHERE is_public=1 AND status='done'").fetchone()[0]
+        queued = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
+        working = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='working'").fetchone()[0]
+        failed = connection.execute("SELECT COUNT(*) FROM jobs WHERE status='failed'").fetchone()[0]
+    storage = shutil.disk_usage(JOBS)
+    return {
+        "users": users,
+        "active_users_7d": active_users,
+        "jobs": jobs,
+        "public_jobs": public_jobs,
+        "queued": queued,
+        "working": working,
+        "failed": failed,
+        "daily_job_limit": DAILY_JOB_LIMIT,
+        "storage": {"total": storage.total, "used": storage.used, "free": storage.free},
+    }
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request) -> list[dict]:
+    require_admin(request)
+    with db() as connection:
+        rows = connection.execute(
+            """
+            SELECT u.*,
+              COUNT(j.id) AS job_count,
+              SUM(CASE WHEN j.status IN ('queued','working') THEN 1 ELSE 0 END) AS active_jobs,
+              SUM(CASE WHEN j.is_public=1 AND j.status='done' THEN 1 ELSE 0 END) AS public_jobs
+            FROM users u
+            LEFT JOIN jobs j ON j.owner=u.subject
+            GROUP BY u.id
+            ORDER BY u.last_seen DESC, u.subject
+            LIMIT 300
+            """
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "subject": row["subject"],
+            "provider": row["provider"],
+            "display_name": row["display_name"],
+            "is_admin": bool(row["is_admin"]),
+            "is_blocked": bool(row["is_blocked"]),
+            "configured_admin": configured_admin({"sub": row["subject"], "provider": row["provider"]}),
+            "created_at": row["created_at"],
+            "last_seen": row["last_seen"],
+            "job_count": row["job_count"],
+            "active_jobs": row["active_jobs"] or 0,
+            "public_jobs": row["public_jobs"] or 0,
+        }
+        for row in rows
+    ]
+
+
+@app.put("/api/admin/users/{user_id}")
+def admin_update_user(request: Request, user_id: str, update: AdminUserUpdate) -> dict:
+    actor = require_admin(request)
+    if update.is_admin is None and update.is_blocked is None:
+        raise HTTPException(400, "沒有要更新的使用者設定")
+    with db() as connection:
+        row = connection.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "找不到使用者")
+        target_identity = {"sub": row["subject"], "provider": row["provider"]}
+        target_configured_admin = configured_admin(target_identity)
+        if update.is_admin is False and target_configured_admin:
+            raise HTTPException(400, "設定檔指定的管理員不能在網頁中移除權限")
+        next_admin = bool(row["is_admin"]) if update.is_admin is None else update.is_admin
+        next_blocked = bool(row["is_blocked"]) if update.is_blocked is None else update.is_blocked
+        if next_blocked and (next_admin or target_configured_admin):
+            raise HTTPException(400, "請先移除管理權限，再停權這個帳號")
+        if next_blocked and user_id == identity_key(actor):
+            raise HTTPException(400, "不能停權目前登入的帳號")
+        connection.execute(
+            "UPDATE users SET is_admin=?, is_blocked=? WHERE id=?",
+            (int(next_admin), int(next_blocked), user_id),
+        )
+        audit_admin(
+            actor,
+            "user.update",
+            row["subject"],
+            {"is_admin": next_admin, "is_blocked": next_blocked},
+            connection,
+        )
+    return {"ok": True, "is_admin": next_admin, "is_blocked": next_blocked}
+
+
+@app.get("/api/admin/jobs")
+def admin_jobs(
+    request: Request,
+    status: Annotated[str, Query(max_length=20)] = "",
+    search: Annotated[str, Query(max_length=80)] = "",
+) -> list[dict]:
+    require_admin(request)
+    if status and status not in {"queued", "working", "done", "failed"}:
+        raise HTTPException(400, "未知的工作狀態")
+    term = f"%{search.strip()}%"
+    with db() as connection:
+        rows = connection.execute(
+            """
+            SELECT id,title,owner,source_kind,status,progress,message,duration,note_count,
+                   is_public,separate_stems,separation_model,created_at,updated_at,error_detail
+            FROM jobs
+            WHERE (?='' OR status=?) AND (title LIKE ? OR owner LIKE ? OR id LIKE ?)
+            ORDER BY created_at DESC
+            LIMIT 150
+            """,
+            (status, status, term, term, term),
+        ).fetchall()
+    return [dict(row) | {"is_public": bool(row["is_public"]), "separate_stems": bool(row["separate_stems"])} for row in rows]
+
+
+@app.put("/api/admin/jobs/{job_id}/visibility")
+def admin_job_visibility(request: Request, job_id: str, update: AdminVisibilityUpdate) -> dict:
+    actor = require_admin(request)
+    with db() as connection:
+        row = connection.execute("SELECT id,title,status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "找不到分析工作")
+        if update.is_public and row["status"] != "done":
+            raise HTTPException(400, "只有完成的分析可以公開")
+        now = int(time.time())
+        connection.execute(
+            "UPDATE jobs SET is_public=?, public_at=?, updated_at=? WHERE id=?",
+            (int(update.is_public), now if update.is_public else None, now, job_id),
+        )
+        audit_admin(actor, "job.visibility", job_id, {"title": row["title"], "is_public": update.is_public}, connection)
+    return {"ok": True, "is_public": update.is_public}
+
+
+@app.delete("/api/admin/jobs/{job_id}")
+def admin_delete_job(request: Request, job_id: str, update: AdminDeleteJob) -> dict:
+    actor = require_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id) or not hmac.compare_digest(update.confirm, job_id):
+        raise HTTPException(400, "刪除確認不符")
+    with db() as connection:
+        row = connection.execute("SELECT id,title,status,owner FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "找不到分析工作")
+    if row["status"] in {"queued", "working"}:
+        raise HTTPException(409, "不能刪除排隊中或處理中的工作")
+    source_dir = JOBS / job_id
+    trash_root = JOBS / ".admin-trash"
+    moved_dir = trash_root / f"{job_id}-{int(time.time())}"
+    if source_dir.exists():
+        trash_root.mkdir(mode=0o700, exist_ok=True)
+        source_dir.rename(moved_dir)
+    try:
+        with db() as connection:
+            connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+            audit_admin(
+                actor,
+                "job.delete",
+                job_id,
+                {"title": row["title"], "owner": row["owner"], "status": row["status"]},
+                connection,
+            )
+    except Exception:
+        if moved_dir.exists() and not source_dir.exists():
+            moved_dir.rename(source_dir)
+        raise
+    if moved_dir.exists():
+        shutil.rmtree(moved_dir)
+    return {"ok": True}
+
+
+@app.get("/api/admin/audit")
+def admin_audit_log(request: Request) -> list[dict]:
+    require_admin(request)
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT actor,action,target,detail,created_at FROM admin_audit ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+    return [dict(row) | {"detail": json.loads(row["detail"] or "{}") } for row in rows]
+
+
 @app.get("/api/jobs/{job_id}/notes/{track}")
 def get_track_notes(request: Request, job_id: str, track: str) -> dict:
     row = accessible_job(request, job_id)
@@ -582,21 +991,51 @@ def get_track_notes(request: Request, job_id: str, track: str) -> dict:
 
 
 def update_job(job_id: str, **changes) -> None:
-    changes["updated_at"] = int(time.time())
-    assignments = ", ".join(f"{key}=?" for key in changes)
+    fields = ("title", "status", "progress", "message", "duration", "note_count", "result", "error_detail")
+    allowed = set(fields)
+    if not changes or not set(changes).issubset(allowed):
+        raise ValueError("不允許的工作欄位更新")
+    values: list[object] = []
+    for field in fields:
+        values.extend((int(field in changes), changes.get(field)))
+    values.extend((int(time.time()), job_id))
     with db() as connection:
-        connection.execute(f"UPDATE jobs SET {assignments} WHERE id=?", (*changes.values(), job_id))
+        connection.execute(
+            """
+            UPDATE jobs SET
+              title=CASE WHEN ? THEN ? ELSE title END,
+              status=CASE WHEN ? THEN ? ELSE status END,
+              progress=CASE WHEN ? THEN ? ELSE progress END,
+              message=CASE WHEN ? THEN ? ELSE message END,
+              duration=CASE WHEN ? THEN ? ELSE duration END,
+              note_count=CASE WHEN ? THEN ? ELSE note_count END,
+              result=CASE WHEN ? THEN ? ELSE result END,
+              error_detail=CASE WHEN ? THEN ? ELSE error_detail END,
+              updated_at=?
+            WHERE id=?
+            """,
+            values,
+        )
 
 
 def ensure_public_url(value: str) -> str:
     parsed = urlparse(value.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise HTTPException(400, "請輸入完整的 http(s) 音樂網址")
+    if parsed.username or parsed.password:
+        raise HTTPException(400, "音樂網址不能包含帳號或密碼")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(400, "網址連接埠格式錯誤") from exc
+    if port not in {None, 80, 443}:
+        raise HTTPException(400, "音樂網址只允許標準 HTTP／HTTPS 連接埠")
     hostname = parsed.hostname.lower().rstrip(".")
     if not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in ALLOWED_HOSTS):
         raise HTTPException(400, "此網域未開放自動下載；請改用上傳音檔")
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)}
+        default_port = 443 if parsed.scheme == "https" else 80
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, port or default_port, type=socket.SOCK_STREAM)}
         if not addresses or any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback or ipaddress.ip_address(address).is_reserved for address in addresses):
             raise HTTPException(400, "基於伺服器安全，不能存取內網網址")
     except socket.gaierror as exc:
@@ -641,14 +1080,23 @@ async def create_job(
             raise HTTPException(400, "不支援這個檔案格式")
         incoming = job_dir / f"source{suffix}"
         size = 0
-        with incoming.open("wb") as target:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_UPLOAD:
-                    target.close()
-                    shutil.rmtree(job_dir)
-                    raise HTTPException(413, "檔案超過大小限制")
-                target.write(chunk)
+        try:
+            with incoming.open("wb") as target:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD:
+                        raise HTTPException(413, "檔案超過大小限制")
+                    target.write(chunk)
+            incoming.chmod(0o600)
+            validate_uploaded_media(incoming)
+        except HTTPException:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        except MediaValidationError as exc:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            await file.close()
         display_title = safe_title(title or Path(file.filename).stem)
         source_detail = file.filename
     else:
@@ -693,6 +1141,13 @@ async def create_job(
             if active_count >= MAX_ACTIVE_PER_USER:
                 shutil.rmtree(job_dir, ignore_errors=True)
                 raise HTTPException(429, f"你已有 {MAX_ACTIVE_PER_USER} 個工作正在處理或排隊，請完成後再加入")
+            if not is_admin(request.state.identity):
+                daily_count = connection.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE owner=? AND created_at>=?", (owner, now - 86400)
+                ).fetchone()[0]
+                if daily_count >= DAILY_JOB_LIMIT:
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    raise HTTPException(429, f"你在最近 24 小時已使用 {DAILY_JOB_LIMIT} 次分析額度")
             connection.execute(
                 "INSERT INTO jobs (id,title,source,source_kind,status,progress,message,separate_stems,separation_model,stem_midi,transcribe_lyrics,is_public,public_at,owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (job_id, display_title, source_detail, source, "queued", 2, "等待處理", int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(is_public), now if is_public else None, owner, now, now),
@@ -701,16 +1156,135 @@ async def create_job(
     return {"id": job_id, "status": "queued"}
 
 
-def run_command(command: list[str], *, env: dict | None = None, timeout: int = 1800) -> subprocess.CompletedProcess:
-    result = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=timeout)
+def command_environment(overrides: dict | None = None) -> dict[str, str]:
+    allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
+    environment = {key: os.environ[key] for key in allowed if os.environ.get(key)}
+    environment.update({
+        "HOME": str(ROOT.parent),
+        "XDG_CACHE_HOME": str(ROOT.parent / ".cache"),
+        "TORCH_HOME": str(ROOT.parent / ".cache" / "torch"),
+        # Bubblewrap mounts a fresh private tmpfs at /tmp for every child process.
+        "NUMBA_CACHE_DIR": "/tmp/numba",  # nosec B108
+        "MPLCONFIGDIR": "/tmp/matplotlib",  # nosec B108
+    })
+    if overrides:
+        environment.update(overrides)
+    return environment
+
+
+def sandbox_command(command: list[str], allow_network: bool) -> list[str]:
+    if not BWRAP or not BWRAP.is_file():
+        raise RuntimeError("分析沙箱 bwrap 尚未安裝")
+    arguments = [
+        str(BWRAP), "--die-with-parent", "--new-session", "--unshare-all",
+        # This /tmp is intentionally replaced rather than shared with the host.
+        "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",  # nosec B108
+        "--tmpfs", str(ROOT.parent), "--ro-bind", str(ROOT), str(ROOT),
+        "--tmpfs", str(DATA), "--ro-bind", "/dev/null", str(ROOT / ".env"),
+    ]
+    if allow_network:
+        arguments.append("--share-net")
+    cache = ROOT.parent / ".cache"
+    if cache.is_dir():
+        arguments.extend(("--ro-bind", str(cache), str(cache)))
+    uv_python = ROOT.parent / ".local" / "share" / "uv" / "python"
+    if uv_python.is_dir():
+        arguments.extend(("--ro-bind", str(uv_python), str(uv_python)))
+    runtime = Path(f"/run/user/{os.getuid()}")
+    if runtime.is_dir():
+        arguments.extend(("--tmpfs", str(runtime)))
+    if STORAGE_MOUNT and STORAGE_MOUNT.is_dir():
+        arguments.extend(("--tmpfs", str(STORAGE_MOUNT)))
+    mounted_jobs: set[Path] = set()
+    jobs_root = JOBS.resolve()
+    for item in command:
+        if not item.startswith("/"):
+            continue
+        candidate = Path(item).resolve(strict=False)
+        try:
+            relative = candidate.relative_to(jobs_root)
+        except ValueError:
+            continue
+        if not relative.parts:
+            continue
+        mounted_jobs.add(jobs_root / relative.parts[0])
+    for job_dir in sorted(mounted_jobs):
+        if job_dir.is_dir():
+            arguments.extend(("--bind", str(job_dir), str(job_dir)))
+    arguments.extend(("--chdir", str(ROOT), "--", *command))
+    return arguments
+
+
+def run_command(
+    command: list[str], *, env: dict | None = None, timeout: int = 1800, allow_network: bool = False
+) -> subprocess.CompletedProcess:
+    # The command is an argv list using fixed local binaries; shell execution is never enabled.
+    isolated_command = sandbox_command(command, allow_network)
+    result = subprocess.run(
+        isolated_command,
+        cwd=ROOT,
+        env=command_environment(env),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+    )  # nosec B603
     if result.returncode:
         diagnostic = (result.stderr or result.stdout or "未知錯誤")[-3000:]
         raise RuntimeError(diagnostic)
     return result
 
 
+class MediaValidationError(ValueError):
+    """A safe, user-facing rejection reason for an untrusted upload."""
+
+
+def validate_uploaded_media(source: Path) -> None:
+    """Verify file content with lightweight signatures and sandboxed ffprobe."""
+    try:
+        with source.open("rb") as uploaded:
+            sample = uploaded.read(4096)
+    except OSError as exc:
+        raise MediaValidationError("無法讀取上傳檔案") from exc
+    if not sample:
+        raise MediaValidationError("上傳檔案是空的")
+
+    lowered = sample.lstrip().lower()
+    executable_headers = (b"\x7felf", b"mz", b"#!")
+    script_markers = (b"<?php", b"<script", b"<html", b"<!doctype html")
+    if lowered.startswith(executable_headers) or any(marker in lowered for marker in script_markers):
+        raise MediaValidationError("檔案內容是程式或網頁，不是可接受的音訊／影片")
+
+    try:
+        probe = run_command([
+            str(FFPROBE), "-v", "error", "-probesize", "10M", "-analyzeduration", "15M",
+            "-show_entries", "format=format_name,duration:stream=codec_type,codec_name",
+            "-of", "json", str(source),
+        ], timeout=30)
+        metadata = json.loads(probe.stdout)
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError) as exc:
+        raise MediaValidationError("檔案內容不是可辨識的音訊或影片") from exc
+
+    streams = metadata.get("streams") or []
+    if not any(stream.get("codec_type") == "audio" and stream.get("codec_name") for stream in streams):
+        raise MediaValidationError("檔案中找不到可辨識的音訊軌")
+    format_names = set(str((metadata.get("format") or {}).get("format_name") or "").split(","))
+    if not format_names.intersection(SAFE_MEDIA_FORMATS):
+        raise MediaValidationError("檔案實際格式不在允許的音訊／影片清單中")
+    duration_value = (metadata.get("format") or {}).get("duration")
+    try:
+        duration = float(duration_value)
+    except (TypeError, ValueError):
+        duration = 0
+    if duration and (not math.isfinite(duration) or duration > MAX_DURATION + 1):
+        raise MediaValidationError(f"音訊超過 {MAX_DURATION // 60} 分鐘限制")
+
+
+def log_job_error(job_id: str, stage: str, error: Exception) -> None:
+    print(f"ChordLab job {job_id} failed during {stage}: {str(error)[-3000:]}", flush=True)
+
+
 def normalize_audio(source: Path, destination: Path) -> float:
-    run_command([str(FFMPEG), "-nostdin", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le", str(destination)], timeout=600)
+    run_command([str(FFMPEG), "-nostdin", "-y", "-i", str(source), "-t", str(MAX_DURATION + 1), "-vn", "-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le", str(destination)], timeout=600)
     with wave.open(str(destination), "rb") as audio:
         duration = audio.getnframes() / audio.getframerate()
     if duration < 1:
@@ -732,8 +1306,7 @@ def separate_audio(job_id: str, source: Path, directory: Path, model: str) -> tu
     output_root = directory / "demucs-output"
     detailed = model == "htdemucs_6s"
     update_job(job_id, progress=36, message="分離六軌：人聲、Bass、鼓、吉他、鋼琴與其他樂器" if detailed else "分離人聲、Bass、鼓與其他樂器（CPU 會需要一段時間）")
-    demucs_env = os.environ.copy()
-    demucs_env["PATH"] = f"{ROOT / 'bin'}:{demucs_env.get('PATH', '')}"
+    demucs_env = {"PATH": f"{ROOT / 'bin'}:{os.environ.get('PATH', '')}"}
     run_command([
         str(DEMUCS_PYTHON), "-m", "demucs.separate",
         "--name", model, "--device", "cpu", "--shifts", "0", "--overlap", "0.1", "--jobs", "1",
@@ -768,7 +1341,7 @@ def separate_audio(job_id: str, source: Path, directory: Path, model: str) -> tu
 def download_url(job_id: str, url: str, directory: Path) -> tuple[Path, str]:
     update_job(job_id, progress=8, message="讀取網址資訊")
     ytdlp = ROOT / ".venv" / "bin" / "yt-dlp"
-    metadata = run_command([str(ytdlp), "--dump-single-json", "--no-playlist", "--socket-timeout", "15", url], timeout=90)
+    metadata = run_command([str(ytdlp), "--ignore-config", "--no-cache-dir", "--dump-single-json", "--no-playlist", "--socket-timeout", "15", url], timeout=90, allow_network=True)
     info = json.loads(metadata.stdout)
     duration = float(info.get("duration") or 0)
     if duration and duration > MAX_DURATION:
@@ -777,9 +1350,9 @@ def download_url(job_id: str, url: str, directory: Path) -> tuple[Path, str]:
     output = directory / "download.%(ext)s"
     update_job(job_id, title=title, progress=14, message="下載音訊")
     run_command([
-        str(ytdlp), "--no-playlist", "--no-part", "--restrict-filenames", "--max-filesize", str(MAX_UPLOAD),
+        str(ytdlp), "--ignore-config", "--no-cache-dir", "--no-playlist", "--no-part", "--restrict-filenames", "--max-filesize", str(MAX_UPLOAD),
         "-f", "bestaudio/best", "-o", str(output), url,
-    ], timeout=900)
+    ], timeout=900, allow_network=True)
     candidates = [path for path in directory.glob("download.*") if path.is_file()]
     if not candidates:
         raise RuntimeError("下載完成但找不到音訊檔")
@@ -843,7 +1416,8 @@ def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], a
             ], timeout=1800)
             completed.append(stem)
         except Exception as exc:
-            failures[stem] = str(exc)[-300:]
+            log_job_error(job_id, f"stem-midi:{stem}", exc)
+            failures[stem] = "轉錄失敗"
     return completed, failures
 
 
@@ -861,7 +1435,8 @@ def transcribe_guitar_tab(job_id: str, directory: Path) -> tuple[list[str], dict
         ], timeout=1800)
         return ["guitar"], {}
     except Exception as exc:
-        return [], {"guitar": str(exc)[-300:]}
+        log_job_error(job_id, "guitar-tab", exc)
+        return [], {"guitar": "轉錄失敗"}
 
 
 def transcribe_lyrics(job_id: str, audio: Path, directory: Path) -> dict:
@@ -912,7 +1487,8 @@ def process_job(
                 with heavy_analysis_slot:
                     lyrics = transcribe_lyrics(job_id, lyrics_audio, directory)
             except Exception as exc:
-                lyrics_error = str(exc)[-500:]
+                log_job_error(job_id, "lyrics", exc)
+                lyrics_error = "歌詞辨識失敗"
         basic_progress = 68 if lyrics_requested else (62 if separate_stems else 36)
         chordino_progress = 82 if separate_stems else 72
         update_job(job_id, duration=duration, progress=basic_progress, message="Basic Pitch 辨識音符")
@@ -930,16 +1506,16 @@ def process_job(
             chordino_progress = 94
         update_job(job_id, note_count=basic.get("note_count", 0), progress=chordino_progress, message="Chordino 辨識和弦與分析 Key")
         chordino_output = directory / "chordino.json"
-        chordino_env = os.environ.copy()
-        chordino_env["VAMP_PATH"] = str(VAMP_PATH)
+        chordino_env = {"VAMP_PATH": str(VAMP_PATH)}
         try:
             run_command([str(CHORDINO_PYTHON), str(ROOT / "tools" / "chordino_worker.py"), str(analysis_audio), str(chordino_output)], env=chordino_env, timeout=1200)
             chordino = json.loads(chordino_output.read_text(encoding="utf-8"))
             chordino_chords = chordino["chords"]
             chordino_error = None
         except Exception as exc:
+            log_job_error(job_id, "chordino", exc)
             chordino_chords = []
-            chordino_error = str(exc)[-400:]
+            chordino_error = "Chordino 辨識失敗"
         chordino_usable = any(segment.get("chord") != "N" for segment in chordino_chords)
         preferred_chords = chordino_chords if chordino_usable else basic.get("chords", [])
         result = {
@@ -959,9 +1535,16 @@ def process_job(
                 "midi_errors": midi_errors,
             },
         }
-        update_job(job_id, status="done", progress=100, message="分析完成", result=json.dumps(result, ensure_ascii=False))
+        update_job(job_id, status="done", progress=100, message="分析完成", result=json.dumps(result, ensure_ascii=False), error_detail=None)
     except Exception as exc:
-        update_job(job_id, status="failed", message=str(exc)[-1000:], progress=100)
+        log_job_error(job_id, "pipeline", exc)
+        update_job(
+            job_id,
+            status="failed",
+            message="分析失敗，請稍後再試或更換音訊來源。管理員可在管理頁查看詳細原因。",
+            error_detail=str(exc)[-3000:],
+            progress=100,
+        )
 
 
 class ChordSegment(BaseModel):
@@ -980,7 +1563,7 @@ class ChordUpdate(BaseModel):
 def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
     if update.method not in {"basic_pitch", "chordino"}:
         raise HTTPException(400, "未知的分析方式")
-    row = accessible_job(request, job_id)
+    row = editable_job(request, job_id)
     if not row["result"]:
         raise HTTPException(404, "找不到可編輯結果")
     duration = float(row["duration"] or 0)

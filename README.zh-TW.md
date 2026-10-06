@@ -23,7 +23,7 @@ ChordLab 是部署於單一伺服器的私人音樂分析工作區。它可以�
 ```bash
 systemctl --user status chordlab
 journalctl --user -u chordlab -f
-curl http://127.0.0.1:8788/api/health
+curl http://127.0.0.1:8788/healthz
 ```
 
 `chordlab-tunnel.service` 會持續執行 Cloudflare Named Tunnel，公開網址為：
@@ -40,6 +40,16 @@ TLS 由 Cloudflare 公開邊緣節點終止。應用程式會把 Cloudflare 的 
 chmod 600 .env
 systemctl --user restart chordlab
 ```
+
+`/healthz` 是不需要登入、只回報存活狀態的最小端點。包含分析引擎細節的 `/api/health` 必須登入後才能存取。
+
+## 管理與開放陌生人使用
+
+管理員可開啟 `https://chord.suika.page/admin`，查看伺服器、佇列及儲存空間狀態，管理使用者權限與停權、審核公開分析、查看工作失敗的內部錯誤、永久刪除完成／失敗工作，以及檢查管理操作紀錄。本機密碼帳號與 `GOOGLE_ADMIN_EMAILS` 中的信箱是由設定檔指定的管理員；現有管理員也能將已登入過的其他 Google 帳號設為資料庫管理員。
+
+公開使用時，非管理員預設在滾動的 24 小時內最多建立五個新分析（`CHORDLAB_DAILY_JOB_LIMIT`），並且仍受同時進行工作數限制。直接重複使用完全相同的公開分析不會消耗新的分析額度。登入工作階段預設為七天（`CHORDLAB_SESSION_DAYS`）。`CHORDLAB_APP_HOSTS` 用來限制允許的 HTTP Host。
+
+應用程式會強制送出安全標頭、驗證會改變狀態之瀏覽器請求的同源性、使用私密 Cookie、立即套用帳號停權、只允許擁有者編輯、檢查網址連接埠與登入資訊，並且只向管理員顯示內部錯誤。仍建議在 Cloudflare 端啟用 Rate Limiting／WAF；應用程式層防護不能取代作業系統更新與不受信任媒體解碼器的隔離。
 
 ## Google 登入
 
@@ -76,6 +86,7 @@ uv pip install --python .venv-whisper/bin/python -r requirements-whisper.txt
 ## 限制與安全性
 
 - 網址匯入只允許設定好的公開媒體網域，並會攔截解析到私人或保留 IP 位址的網址。
+- 上傳檔不只檢查副檔名：系統會攔截程式／網頁檔頭，再於 Bubblewrap 隔離沙箱內以 `ffprobe` 確認實際容器與音訊軌。檔案存放於非公開目錄、使用伺服器產生的檔名，且永遠不會當成程式執行。
 - 播放清單已停用；分析工作會循序處理；上傳限制預設為 200 MB／20 分鐘。
 - 系統不會下載 Spotify 音樂連結。請只上傳或處理你有權使用的音訊。
 - 音樂分析屬於機率推測。獨立樂器音軌通常能得到較乾淨的 Basic Pitch MIDI；完整混音則通常建議先查看 Chordino 結果。

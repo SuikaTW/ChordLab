@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#15181b">
+  <title>ChordLab 管理中心</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=11">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">CL</span><span>ChordLab</span></a>
+    <nav class="top-nav" aria-label="管理導覽"><a href="/">返回工作台</a><a class="active" href="/admin">管理中心</a></nav>
+    <div class="top-actions"><form method="post" action="/logout"><button class="icon-button" title="登出" aria-label="登出"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h5a1 1 0 011 1v16a1 1 0 01-1 1h-5"/></svg></button></form></div>
+  </header>
+
+  <main class="admin-shell">
+    <section class="admin-hero">
+      <div><p class="eyebrow">ADMINISTRATION</p><h1>管理中心</h1><p>管理帳號權限、分析工作、公開內容與伺服器資源。</p></div>
+      <button id="refreshAdmin" class="secondary">重新整理</button>
+    </section>
+
+    <div class="security-note">停權會在使用者下一次請求時立即生效。刪除分析是永久操作，而且處理中／排隊中的工作不能刪除。所有管理操作都會留下稽核紀錄。</div>
+
+    <section id="adminStats" class="admin-stats" aria-live="polite"></section>
+
+    <section class="admin-panel">
+      <div class="admin-panel-head"><h2>使用者與權限</h2><span id="userCount" class="muted"></span></div>
+      <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>帳號</th><th>權限</th><th>活動</th><th>分析</th><th>操作</th></tr></thead><tbody id="adminUsers"></tbody></table></div>
+    </section>
+
+    <section class="admin-panel">
+      <div class="admin-panel-head"><h2>分析工作</h2><div class="admin-filters"><input id="jobSearch" type="search" maxlength="80" placeholder="搜尋標題、帳號或 ID"><select id="jobStatus"><option value="">所有狀態</option><option value="queued">排隊</option><option value="working">處理中</option><option value="done">完成</option><option value="failed">失敗</option></select></div></div>
+      <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>分析</th><th>擁有者</th><th>狀態</th><th>建立時間</th><th>操作</th></tr></thead><tbody id="adminJobs"></tbody></table></div>
+    </section>
+
+    <section class="admin-panel">
+      <div class="admin-panel-head"><h2>管理操作紀錄</h2><span class="muted">最近 100 筆</span></div>
+      <div id="adminAudit" class="audit-list"></div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/admin.js?v=1" defer></script>
+</body>
+</html>
