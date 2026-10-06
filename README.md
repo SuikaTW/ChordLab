@@ -23,6 +23,27 @@ Users may explicitly publish a completed analysis to the shared library. Public 
 
 Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Short opening songwriter/composer captions hallucinated as lyrics are filtered; singing transcription remains approximate and may need manual correction.
 
+## Dual-engine chord cross-check
+
+Run `bash scripts/install-btc.sh`, then restart the service. New jobs use the official
+BTC-ISMIR19 170-class checkpoint to cross-check Chordino on the same analysis audio.
+The default comparison keeps the baseline labels and boundaries; dots indicate
+disagreement, not correctness. Candidate percentages represent overlap duration,
+not confidence. Owners/admins may explicitly replace a whole segment with a candidate;
+the original Chordino timeline is retained. BTC failures do not fail the job.
+
+Existing jobs are not automatically reprocessed or switched. With an idle queue:
+
+```bash
+.venv/bin/python tools/backfill_chord_comparison.py --job SONG_JOB_ID
+```
+
+Disable future cross-checks with `CHORDLAB_BTC_ENABLED=false` and a service restart.
+The isolated CPU runtime uses a pinned, SHA-256-verified official checkpoint,
+restricted weights-only loading and a network-disabled sandbox. BTC's vocabulary
+does not include full 9/11/13 or inversions; it is not a guitar-note/TAB transcriber.
+Accuracy must be evaluated against human annotations, not engine agreement.
+
 ## Service
 
 The user service listens only on `127.0.0.1:8788`. Put HTTPS authentication/proxying in front of it; the application also requires its own login from `.env`.

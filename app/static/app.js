@@ -560,6 +560,7 @@ function renderWorkspace() {
     }軌分離，再執行音符、和弦與 Key 分析。`
     : "伺服器會依序完成音訊轉換、Basic Pitch 音符辨識、Chordino 和弦與 Key 分析。";
   if (state.current.status === "done") {
+    $("[data-method='ensemble']").classList.toggle("hidden", !state.current.result.methods.ensemble?.length);
     if (!state.current.result.methods[state.method]?.length) {
       state.method = state.current.result.methods.chordino.length ? "chordino" : "basic_pitch";
     }
@@ -1065,7 +1066,7 @@ function updateLyrics() {
 function switchMethod(method, announce = true) {
   if (!state.current?.result) return;
   if (!state.current.result.methods[method]?.length) {
-    toast(method === "chordino" ? "這次 Chordino 沒有產生結果" : "沒有 Basic Pitch 結果", true);
+    toast("這首歌沒有這種分析結果", true);
     return;
   }
   state.method = method;
@@ -1076,19 +1077,29 @@ function switchMethod(method, announce = true) {
   );
   renderTimeline();
   renderEditor();
-  if (announce) toast(`已切換到 ${method === "chordino" ? "Chordino" : "Basic Pitch"}`);
+  if (announce) toast(`已切換到${method === "ensemble" ? "雙引擎比對" : method === "chordino" ? "原本辨識" : "音符推算"}`);
 }
 
+function needsReview(segment) {
+  return segment.comparison && !["agree", "unavailable"].includes(segment.comparison.status);
+}
 function chords() {
   return state.current?.result?.methods?.[state.method] || [];
 }
 function renderTimeline() {
+  const summary = $("#comparisonSummary");
+  summary.classList.toggle("hidden", state.method !== "ensemble");
+  if (state.method === "ensemble") {
+    const count = chords().filter(needsReview).length;
+    summary.textContent = count ? `${count} 段有不同判斷 · 點選帶圓點的和弦查看候選` : "未標記分歧，仍可人工修正";
+  }
   const list = chords(), duration = state.current.duration || 1, timeline = $("#timeline");
   timeline.innerHTML = list.map((segment, index) => {
     const played = playedChord(segment.chord);
+    const review = state.method === "ensemble" && needsReview(segment);
     return `<button class="chord-block ${
       index === state.selected ? "selected" : ""
-    }" data-segment="${index}" style="width:${
+    } ${review ? "needs-review" : ""}" ${review ? 'title="兩個引擎有不同判斷，點選查看"' : ""} data-segment="${index}" style="width:${
       Math.max(62, (segment.end - segment.start) / duration * 1300)
     }px"><b>${escapeHtml(played)}</b>${state.capo ? `<em>原 ${escapeHtml(segment.chord)}</em>` : ""}<small>${
       durationText(segment.start)
@@ -1138,6 +1149,36 @@ function renderEditor() {
     $("#endInput").value = segment.end;
   }
   $("#saveState").textContent = "尚未修改";
+  renderCandidates(segment, editable);
+}
+function renderCandidates(segment, editable) {
+  const box = $("#chordCandidates"), comparison = state.method === "ensemble" ? segment?.comparison : null;
+  const jobId = state.current?.id;
+  box.classList.toggle("hidden", !comparison || !needsReview(segment));
+  box.replaceChildren();
+  if (!comparison || !needsReview(segment)) return;
+  const explanation = document.createElement("p");
+  explanation.textContent = comparison.status === "detail" ? "根音與和弦家族相同，延伸音或低音不同。" : "BTC 對這一段有不同判斷；目前保留原本結果。";
+  box.append(explanation);
+  for (const candidate of comparison.candidates || []) {
+    const row = document.createElement("div"), text = document.createElement("span");
+    text.textContent = `BTC ${playedChord(candidate.chord)} · 占此段 ${Math.round(candidate.share * 100)}% 時間`;
+    row.append(text);
+    if (editable && !["N", "X", segment.chord].includes(candidate.chord)) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "text-button"; button.textContent = "整段改用這個";
+      button.addEventListener("click", async () => {
+        if (state.current?.id !== jobId || chords()[state.selected] !== segment) return;
+        if (!confirm(`將 ${durationText(segment.start)}–${durationText(segment.end)} 整段改為 ${candidate.chord}？`)) return;
+        segment.chord = candidate.chord;
+        delete segment.comparison; segment.manual = true;
+        renderTimeline(); renderEditor(); renderVoicing(playedChord(segment.chord), segment.chord);
+        await persist();
+      });
+      row.append(button);
+    }
+    box.append(row);
+  }
 }
 async function persist() {
   try {
@@ -1158,7 +1199,9 @@ async function saveSegment(event) {
   segment.chord = $("#chordInput").value.trim() || "N";
   segment.start = Number($("#startInput").value);
   segment.end = Number($("#endInput").value);
+  delete segment.comparison;
   renderTimeline();
+  renderCandidates(segment, state.current?.mine || state.viewer?.admin);
   renderVoicing(playedChord(segment.chord), segment.chord);
   await persist();
 }
@@ -1173,34 +1216,7 @@ async function deleteSegment() {
 }
 
 function parseChord(label) {
-  if (!label || label === "N") return null;
-  const match = label.match(/^([A-G])([#b]?)(.*)$/);
-  if (!match) return null;
-  let root = NOTE_NAMES.indexOf(match[1] + match[2]);
-  if (root < 0) {
-    const flats = { Db: 1, Gb: 6 };
-    root = flats[match[1] + match[2]] ?? -1;
-  }
-  if (root < 0) return null;
-  const quality = match[3].toLowerCase();
-  let steps = quality.startsWith("m7b5")
-    ? [0, 3, 6, 10]
-    : quality.startsWith("maj7")
-    ? [0, 4, 7, 11]
-    : quality.startsWith("m7")
-    ? [0, 3, 7, 10]
-    : quality.startsWith("m")
-    ? [0, 3, 7]
-    : quality.startsWith("7")
-    ? [0, 4, 7, 10]
-    : quality.startsWith("sus2")
-    ? [0, 2, 7]
-    : quality.startsWith("sus")
-    ? [0, 5, 7]
-    : quality.startsWith("dim")
-    ? [0, 3, 6]
-    : [0, 4, 7];
-  return { root, tones: steps.map((step) => (root + step) % 12) };
+  return ChordLabTheory.parseChord(label);
 }
 const voicingCache = new Map();
 function findVoicing(label) {
@@ -1236,6 +1252,7 @@ function computeVoicing(label) {
           span = fretted.length ? Math.max(...fretted) - Math.min(...fretted) : 0;
         if (span > 4) return;
         const bass = shape.findIndex((x) => x >= 0), bassPc = (TUNING[bass] + shape[bass]) % 12;
+        if (parsed.bass !== undefined && bassPc !== parsed.bass) return;
         const score = shape.filter((x) => x < 0).length * 2 + span * 1.5 + played.reduce((a, b) =>
               a + b, 0) * .12 +
           (bassPc === parsed.root ? 0 : 2);

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=18">
+  <link rel="stylesheet" href="/static/style.css?v=19">
 </head>
 <body>
   <header class="topbar">
@@ -78,7 +78,7 @@
           </div>
           <audio id="audioPlayer" class="audio-engine" preload="metadata" playsinline></audio>
           <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><label id="weakTrackOption" class="hidden"><input id="showWeakTracks" type="checkbox"> 顯示弱音軌 <small id="weakTrackCount"></small></label><small id="analysisTrackLabel"></small></div>
-          <div class="method-row"><div class="method-switch"><button data-method="chordino" class="active" title="較適合完整歌曲的和弦辨識">和弦辨識</button><button data-method="basic_pitch" title="從音符推算和弦">音符推算</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats" aria-hidden="true"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
+          <div class="method-row"><div class="method-switch"><button data-method="ensemble" class="hidden" title="保留原本和弦，標記 BTC 的不同判斷">雙引擎比對</button><button data-method="chordino" class="active" title="較適合完整歌曲的和弦辨識">原本辨識</button><button data-method="basic_pitch" title="從音符推算和弦">音符推算</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats" aria-hidden="true"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
           <details id="stemDownloadsPanel" class="downloads-panel hidden"><summary><span>分軌與 MIDI 下載</span><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></summary><div id="stemDownloads" class="stem-downloads"></div></details>
 
           <nav class="result-tabs" aria-label="分析內容">
@@ -89,6 +89,7 @@
 
           <div data-result-panel="chords">
             <div class="content-heading"><div><p class="eyebrow">CHORD TIMELINE</p><h3>和弦時間軸</h3></div><span>點選和弦可查看按法與修正</span></div>
+            <p id="comparisonSummary" class="comparison-summary hidden" role="status"></p>
             <div class="timeline-wrap"><div class="timeline-ruler" id="timelineRuler"></div><div class="timeline" id="timeline"></div></div>
 
             <div class="detail-grid">
@@ -96,6 +97,7 @@
                 <div class="panel-title"><div><p class="eyebrow">GUITAR VOICING</p><h3 id="selectedChord">選擇一個和弦</h3></div><button id="playChord" class="icon-button" title="播放和弦" aria-label="播放和弦"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>
                 <div id="fretboard" class="tablature empty"><span>點一下時間軸上的和弦，這裡會顯示橫向六線譜、格數與音名。</span></div>
                 <p id="voicingNotes" class="voicing-notes"></p>
+                <div id="chordCandidates" class="chord-candidates hidden"></div>
               </section>
               <section class="segment-editor">
                 <div class="panel-title"><div><p class="eyebrow">MANUAL CORRECTION</p><h3>人工修正</h3></div><span id="saveState" class="save-state">尚未修改</span></div>
@@ -144,6 +146,7 @@
   <script src="/static/tab-engine.js?v=4" defer></script>
   <script src="/static/tab-layout.js?v=2" defer></script>
   <script src="/static/tab-studio.js?v=2" defer></script>
-  <script src="/static/app.js?v=29" defer></script>
+  <script src="/static/chord-theory.js?v=1" defer></script>
+  <script src="/static/app.js?v=30" defer></script>
 </body>
 </html>

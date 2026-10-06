@@ -6,6 +6,7 @@ vendor/cloudflared/
 vendor/toolchain/
 vendor/whisper/
 vendor/vamp/
+vendor/btc/models/
 __pycache__/
 *.pyc
 .pytest_cache/

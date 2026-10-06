@@ -42,6 +42,7 @@ from app.stem_activity import detect_activity
 from app.light_tasks import LightTaskPool, PoolBusy
 from app.preparation import DownloadPreparation
 from app.tab_models import TabDocument
+from app.chord_comparison import compare_chords
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,9 @@ DB_PATH = DATA / "chordlab.sqlite3"
 STATIC = ROOT / "app" / "static"
 BASIC_PYTHON = ROOT / ".venv-basic" / "bin" / "python"
 CHORDINO_PYTHON = ROOT / ".venv-chordino" / "bin" / "python"
+BTC_PYTHON = ROOT / ".venv-btc" / "bin" / "python"
+BTC_MODEL = ROOT / "vendor/btc/models/btc_model_large_voca.pt"
+BTC_ENABLED = os.getenv("CHORDLAB_BTC_ENABLED", "true").lower() not in {"0", "false", "no"}
 DEMUCS_PYTHON = ROOT / ".venv-demucs" / "bin" / "python"
 WHISPER_PYTHON = ROOT / ".venv-whisper" / "bin" / "python"
 VAMP_PATH = ROOT / "vendor" / "vamp"
@@ -472,6 +476,7 @@ def health() -> dict:
         "ok": True,
         "basic_pitch": BASIC_PYTHON.exists(),
         "chordino": CHORDINO_PYTHON.exists() and (VAMP_PATH / "nnls-chroma.so").exists(),
+        "btc": BTC_ENABLED and BTC_PYTHON.exists() and BTC_MODEL.is_file(),
         "demucs": DEMUCS_PYTHON.exists(),
         "whisper": WHISPER_PYTHON.exists(),
         "google_login": GOOGLE_ENABLED,
@@ -1751,6 +1756,23 @@ def process_job(
             chordino_chords = []
             chordino_error = "Chordino 辨識失敗"
         chordino_usable = any(segment.get("chord") != "N" for segment in chordino_chords)
+        btc = None
+        btc_error = None
+        comparison = None
+        if BTC_ENABLED and BTC_PYTHON.exists() and BTC_MODEL.is_file():
+            update_job(job_id, progress=96, message="雙引擎比對和弦")
+            try:
+                btc_output = directory / "btc.json"
+                with heavy_analysis_slot:
+                    run_command([str(BTC_PYTHON), str(ROOT / "tools/btc_worker.py"), str(analysis_audio), str(btc_output)], timeout=600)
+                btc = json.loads(btc_output.read_text(encoding="utf-8"))
+                if btc.get("chords") and chordino_chords:
+                    comparison = compare_chords(chordino_chords, btc["chords"], duration)
+            except Exception as exc:
+                log_job_error(job_id, "btc", exc)
+                btc = None
+                comparison = None
+                btc_error = "雙引擎比對暫時無法完成，已保留原本結果"
         rhythm = None
         try:
             rhythm_output = directory / "rhythm.json"
@@ -1761,8 +1783,13 @@ def process_job(
             log_job_error(job_id, "rhythm", exc)
         preferred_chords = chordino_chords if chordino_usable else basic.get("chords", [])
         result = {
-            "active_method": "chordino" if chordino_usable else "basic_pitch",
-            "methods": {"basic_pitch": basic.get("chords", []), "chordino": chordino_chords},
+            "active_method": "ensemble" if comparison and chordino_usable else ("chordino" if chordino_usable else "basic_pitch"),
+            "methods": {"basic_pitch": basic.get("chords", []), "chordino": chordino_chords,
+                        **({"btc": btc["chords"]} if btc else {}),
+                        **({"ensemble": comparison["chords"]} if comparison else {})},
+            "chord_comparison": {**comparison["summary"], "input_stem": analysis_stem,
+                                 "btc_elapsed_seconds": btc.get("elapsed_seconds"), "engine": btc.get("engine")} if comparison else None,
+            "btc_error": btc_error,
             "notes": basic.get("notes", []),
             "chordino_error": chordino_error,
             "lyrics": lyrics,
@@ -1811,7 +1838,7 @@ class ChordUpdate(BaseModel):
 
 @app.put("/api/jobs/{job_id}/chords")
 def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
-    if update.method not in {"basic_pitch", "chordino"}:
+    if update.method not in {"basic_pitch", "chordino", "ensemble"}:
         raise HTTPException(400, "未知的分析方式")
     row = editable_job(request, job_id)
     if not row["result"]:
@@ -1829,6 +1856,18 @@ def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
         if not latest:
             raise HTTPException(404, "找不到可編輯結果")
         result = json.loads(latest["result"])
+        if update.method not in result.get("methods", {}):
+            raise HTTPException(400, "這首歌沒有這種分析結果")
+        previous = {(s["start"], s["end"], s["chord"]): s for s in result["methods"][update.method]}
+        if update.method == "ensemble":
+            for segment in chords:
+                old = previous.get((segment["start"], segment["end"], segment["chord"]))
+                if old and old.get("comparison"):
+                    segment["comparison"] = old["comparison"]
+                else:
+                    segment["manual"] = True
+            result["chord_comparison"]["review_segments"] = sum(
+                s.get("comparison", {}).get("status") in {"detail", "conflict", "mixed"} for s in chords)
         result["methods"][update.method] = chords
         result["active_method"] = update.method
         result["key"] = detect_key(chords)

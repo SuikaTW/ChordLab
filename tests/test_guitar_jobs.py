@@ -99,6 +99,69 @@ class GuitarJobTests(unittest.TestCase):
         self.assertEqual(result["guitar_tab"], {"profile": "guitar_v2", "source": "original", "status": "done"})
         self.assertIn("guitar", result["separation"]["midi_stems"])
 
+    def test_dual_engine_uses_same_audio_and_failure_is_nonfatal(self):
+        for fail in (False, True):
+            with self.subTest(btc_failure=fail):
+                job_id = "comparison-failed" if fail else "comparison-good"
+                directory = self.jobs / job_id
+                directory.mkdir()
+                (directory / "source.wav").touch()
+                with main.db() as connection:
+                    connection.execute("INSERT INTO jobs(id,title,source,status,created_at,updated_at) VALUES (?,?,?,'queued',1,1)", (job_id, "test", "test"))
+                inputs = {}
+                def fake_command(command, **kwargs):
+                    worker = Path(command[1]).name
+                    if worker == "basic_pitch_worker.py":
+                        payload = {"notes": [], "chords": [], "note_count": 0}
+                    elif worker == "chordino_worker.py":
+                        inputs["chordino"] = command[2]
+                        payload = {"chords": [{"start": 0, "end": 10, "chord": "C"}]}
+                    elif worker == "btc_worker.py":
+                        inputs["btc"] = command[2]
+                        if fail:
+                            raise RuntimeError("simulated BTC failure")
+                        payload = {"chords": [{"start": 0, "end": 10, "chord": "Cmaj7"}], "elapsed_seconds": 1, "engine": "btc_ismir19_170"}
+                    else:
+                        payload = {"bpm": 120, "beats": []}
+                    Path(command[3]).write_text(json.dumps(payload))
+                with patch.object(main, "normalize_audio", return_value=10), \
+                     patch.object(main, "run_command", side_effect=fake_command), \
+                     patch.object(main, "BTC_ENABLED", True), \
+                     patch.object(main, "BTC_PYTHON", Path(__file__)), \
+                     patch.object(main, "BTC_MODEL", Path(__file__)):
+                    main.process_job(job_id, "upload", "test")
+                with main.db() as connection:
+                    row = connection.execute("SELECT status,result FROM jobs WHERE id=?", (job_id,)).fetchone()
+                result = json.loads(row["result"])
+                self.assertEqual(row["status"], "done")
+                self.assertEqual(inputs["btc"], inputs["chordino"])
+                self.assertEqual(result["active_method"], "chordino" if fail else "ensemble")
+                if fail:
+                    self.assertNotIn("ensemble", result["methods"])
+                    self.assertIsNotNone(result["btc_error"])
+                else:
+                    self.assertEqual(result["methods"]["ensemble"][0]["chord"], "C")
+                    self.assertEqual(result["methods"]["ensemble"][0]["comparison"]["status"], "detail")
+
+    def test_editing_comparison_preserves_original_and_clears_only_changed_hint(self):
+        job_id = "c" * 32
+        timeline = [{"start": 0, "end": 5, "chord": "C", "comparison": {"status": "detail", "candidates": [{"chord": "Cmaj7", "share": 1}]}},
+                    {"start": 5, "end": 10, "chord": "G", "comparison": {"status": "agree", "candidates": [{"chord": "G", "share": 1}]}}]
+        result = {"active_method": "ensemble", "methods": {"ensemble": timeline, "chordino": timeline, "btc": []}, "chord_comparison": {"review_segments": 1}}
+        with main.db() as connection:
+            connection.execute("INSERT INTO jobs(id,title,source,status,duration,result,owner,created_at,updated_at) VALUES (?,?,?,'done',10,?,'tester',1,1)",
+                               (job_id, "test", "test", json.dumps(result)))
+        changed = [{"start": 0, "end": 5, "chord": "Cmaj7"}, {"start": 5, "end": 10, "chord": "G"}]
+        response = self.client.put(f"/api/jobs/{job_id}/chords", json={"method": "ensemble", "chords": changed}, headers={"Origin": "http://testserver"})
+        self.assertEqual(response.status_code, 200, response.text)
+        with main.db() as connection:
+            saved = json.loads(connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()[0])
+        self.assertEqual(saved["methods"]["chordino"][0]["chord"], "C")
+        self.assertTrue(saved["methods"]["ensemble"][0]["manual"])
+        self.assertNotIn("comparison", saved["methods"]["ensemble"][0])
+        self.assertEqual(saved["methods"]["ensemble"][1]["comparison"]["status"], "agree")
+        self.assertEqual(saved["chord_comparison"]["review_segments"], 0)
+
     def test_separated_pipeline_skips_weak_tracks_before_midi(self):
         job_id = "gated-pipeline"
         directory = self.jobs / job_id

@@ -330,3 +330,13 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 }
 
 @media(prefers-reduced-motion:reduce){.active-workspace:not(.hidden),[data-result-panel]:not(.result-hidden),.analysis-options[open] .analysis-options-body,.downloads-panel[open] .stem-downloads,.player-toggle:disabled{animation:none}.tab-system,.tab-system-playhead,.chord-block,.lyrics-list button{transition:none}}
+/* Disagreement is a review hint, not recognition accuracy. */
+.comparison-summary { color: #686b65; font-size: .84rem; margin: 0 0 12px; }
+.chord-block.needs-review { position: relative; }
+.chord-block.needs-review::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #b17b32; position: absolute; right: 8px; top: 8px; }
+.chord-candidates { border-top: 1px solid #deded5; padding-top: 12px; font-size: .85rem; }
+.chord-candidates p { margin: 0 0 8px; color: #686b65; }
+.chord-candidates > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.method-options[open] { flex: 1 1 100%; margin-left: 0; }
+.method-options .method-switch { display: flex; flex-wrap: wrap; width: fit-content; max-width: 100%; }
+.method-options .method-switch button { flex: 0 0 auto; white-space: nowrap; padding: 8px 12px; }
