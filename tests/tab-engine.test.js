@@ -72,7 +72,7 @@ Deno.test("register filters are explicit and position preference preserves pitch
     high.voiceFilteredCount === 3 && high.omittedCount === 0,
     "Separate filter count from unplayable count",
   );
-  const preferred = assign([note(64)], { position: "middle" });
+  const preferred = assign([note(65)], { position: "middle" });
   assert(preferred.notes[0].fret >= 5 && preferred.notes[0].fret <= 9, "Prefer requested position");
   playable(preferred);
   playable(high);
@@ -82,6 +82,41 @@ Deno.test("register filters are explicit and position preference preserves pitch
     necessary.notes.length === 1 && necessary.notes[0].fret === 0,
     "Preference must not drop necessary notes",
   );
+});
+Deno.test("position preference keeps playable open strings in every hand position", () => {
+  for (const position of ["auto", "open", "middle", "high"]) {
+    for (const midi of [40, 45, 50, 55, 59, 64]) {
+      const result = assign([note(midi)], { position });
+      assert(result.notes.length === 1 && result.notes[0].fret === 0,
+        `${position} must not penalize the open string for pitch ${midi}`);
+      playable(result);
+    }
+    const phrase = assign([note(73, 0), note(64, .2), note(73, .4)], { position });
+    assert(phrase.notes.length === 3 && phrase.notes[1].fret === 0, "Open string does not move the fretting hand");
+    playable(phrase);
+  }
+});
+Deno.test("open-string exemption follows tuning and capo and retains chord string constraints", () => {
+  for (const options of [
+    { tuning: "drop_d", capo: 2 }, { tuning: "dadgad", capo: 3 },
+    { tuning: "half_down", capo: 1 }, { tuning: "whole_down", capo: 2 },
+    { instrument: "bass", tuning: "bass_standard" },
+    { instrument: "bass", tuning: "bass_five" },
+    { instrument: "bass", tuning: "bass_drop_d" },
+  ]) {
+    const tuning = globalThis.ChordLabTab.TUNINGS[options.tuning].midi;
+    const pitches = tuning.map((midi) => midi + (options.capo || 0));
+    const result = assign(pitches.map((midi) => note(midi, 0, .5)), { ...options, position: "high" });
+    assert(result.notes.length === pitches.length && result.notes.every((n) => n.fret === 0), "Actual open chord remains playable");
+    assert(new Set(result.notes.map((n) => n.string)).size === pitches.length, "Never reuse a string within a chord");
+    playable(result);
+  }
+  const hinted = assign([{ ...note(64), model_string: 3, model_fret: 9, fingering_score: .99 }],
+    { position: "high", useModelFingering: true });
+  assert(hinted.notes[0].string === 3, "Keep strong model evidence soft but meaningful");
+  const chord = assign([64, 65].map((midi) => note(midi, 0, .5)), { position: "high" });
+  assert(chord.notes.length === 2 && new Set(chord.notes.map((n) => n.string)).size === 2, "An open-string option cannot overwrite another chord tone");
+  playable(chord);
 });
 function assert(value, message) {
   if (!value) throw new Error(message);

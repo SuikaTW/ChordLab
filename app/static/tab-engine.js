@@ -111,7 +111,10 @@
             const overlap = old && old.end > note.start + .025;
             const crossing = candidate.placed.filter((n) => n.midi < note.midi && n.string > string).length;
             const movement = fret > 0 ? Math.abs(fret - candidate.position) * .12 : 0;
-            const preference = range ? Math.max(0, range[0] - fret, fret - range[1]) * 2 : 0;
+            // Open strings need no fretting-hand shift, even at a high position.
+            // Keep them in the phrase search; string occupancy and model evidence
+            // can still favor a fretted equivalent when it fits the music better.
+            const preference = range && fret > 0 ? Math.max(0, range[0] - fret, fret - range[1]) * 2 : 0;
             const validHint = !bass && options.useModelFingering && (!options.tuning || options.tuning === "standard") && capo === 0 &&
               Number.isInteger(note.model_string) && note.model_string >= 0 && note.model_string < 6 &&
               Number.isInteger(note.model_fret) && note.model_fret >= 0 && note.model_fret <= 19 &&
