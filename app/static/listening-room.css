@@ -1,0 +1,111 @@
+/* Listening Room: original CSS artwork, independent from the preserved classic UI. */
+html[data-theme="studio"] {
+  color-scheme:light;
+  --ink:#292f2c;--paper:#f6f4ef;--panel:#fffdf9;--line:#deded4;
+  --muted:#626c65;--soft:#eeeee6;--coral:#32634e;--acid:#deeadb;--blue:#cbdccd;
+  --selected:#e6eee3;--selected-line:#9bac98;--button-ink:#fff;
+  --desk-shadow:0 12px 36px #242d2210;
+}
+html[data-theme="studio"][data-color-mode="dark"] {
+  color-scheme:dark;
+  --ink:#e9ede4;--paper:#171b1a;--panel:#202624;--line:#38413b;
+  --muted:#abb6ac;--soft:#2a322d;--coral:#b5d7a5;--acid:#c3dcb6;--blue:#5d7966;
+  --selected:#303f32;--selected-line:#799477;--button-ink:#1a2a1a;
+  --desk-shadow:0 12px 36px #0003;
+}
+html[data-theme="studio"] body {background:var(--paper)}
+/* Palette swaps are atomic: text/background must not cross-fade out of contrast. */
+html[data-theme="studio"] button {transition:border-color .15s,filter .15s}
+html[data-theme="studio"] :is(.topbar,.left-rail,.import-panel,.field input,.segment-editor input,.analysis-preset select,.analysis-options,.stem-option,.public-toggle,.secondary,.workspace-actions .secondary,.progress-panel,.full-tab-panel,.lyrics-panel,.library-search,.library-card,.player-panel.player-dock,#workspaceUtilitiesBody,.tab-system,.tab-rest,.tab-flow-viewport,.track-switch button,.theme-control select) {background:var(--panel);border-color:var(--line)}
+html[data-theme="studio"] :is(input,select,textarea) {color:var(--ink);accent-color:var(--coral)}
+html[data-theme="studio"] input::placeholder {color:var(--muted);opacity:.8}
+html[data-theme="studio"] :is(.eyebrow,.timeline-ruler,.status-pill,.tab-system-string>b,.tab-rest) {color:var(--muted)}
+html[data-theme="studio"] :is(.primary,.tab-toolbar .primary,.player-dock .player-toggle,.player-dock .player-toggle.playing) {background:var(--coral);color:var(--button-ink)}
+html[data-theme="studio"] .primary:hover {background:var(--coral);filter:brightness(.93)}
+html[data-theme="studio"] :is(.top-nav button.active,.source-tabs .tab.active,.method-switch button.active) {background:var(--panel);color:var(--coral)}
+html[data-theme="studio"] :is(.job-item.active,.chord-block.selected,.chord-block.playing,.chord-block:hover,.voicing-positions button[aria-pressed="true"],.lyrics-list button.active,.library-favorite.active) {background:var(--selected);border-color:var(--selected-line)}
+html[data-theme="studio"] :is(.secondary:hover,.drop-zone:hover,.drop-zone.drag,.stem-option:hover,.lyrics-list button:hover) {background:var(--soft);border-color:var(--selected-line)}
+html[data-theme="studio"] .brand-mark {background:var(--coral);color:var(--button-ink);border-radius:50%;letter-spacing:-1px}
+html[data-theme="studio"] .brand small {display:none}
+html[data-theme="studio"] .topbar {border-bottom:1px solid var(--line)}
+html[data-theme="studio"] .source-tabs .tab.active:after {display:none}
+html[data-theme="studio"] .workspace {background:radial-gradient(ellipse at 90% 0%,color-mix(in srgb,var(--song-accent,#c77753) 6%,transparent),transparent 60%)}
+html[data-theme="studio"] .workspace-head {padding:6px 0 28px;margin-bottom:12px}
+html[data-theme="studio"] .song-heading {display:flex;align-items:center;gap:24px;min-width:0;flex:1}
+html[data-theme="studio"] .song-heading-copy {min-width:0}
+html[data-theme="studio"] #workMeta {font-family:inherit;letter-spacing:.04em;font-size:13px;font-weight:500;color:var(--muted);margin-bottom:8px}
+html[data-theme="studio"] #workTitle {font-size:clamp(25px,2.4vw,36px);letter-spacing:-.025em;line-height:1.4}
+html[data-theme="studio"] .song-sleeve {position:relative;flex:0 0 112px;height:112px;border-radius:5px 15px 15px 5px;background:var(--song-accent,#c77753);box-shadow:inset 5px 0 #0002,0 8px 20px #0001;overflow:hidden}
+html[data-theme="studio"] .record-disc {position:absolute;width:90px;height:90px;border-radius:50%;left:30px;top:9px;background:repeating-radial-gradient(circle at center,#252825 0 1px,#373a35 2px 3px);box-shadow:0 2px 5px #0004;transform:rotate(-25deg)}
+html[data-theme="studio"] .record-disc:before {content:"";position:absolute;inset:28px;border-radius:50%;background:var(--song-accent,#c77753);border:1px solid #fff3}
+html[data-theme="studio"] .record-disc:after {content:"";position:absolute;inset:41px;background:#1e2420;border-radius:50%;box-shadow:0 0 0 1px #fff4}
+html[data-theme="studio"] .sleeve-mark {position:absolute;left:12px;bottom:9px;font:600 10px "ChordLab Manrope",sans-serif;color:#161a17;letter-spacing:1px}
+html[data-theme="studio"] .music-playing .song-sleeve .record-disc {animation:record-turn 14s linear infinite}
+@keyframes record-turn {from{transform:rotate(-25deg)}to{transform:rotate(335deg)}}
+html[data-theme="studio"] .job-item {position:relative;gap:12px;background:transparent;border-radius:10px;padding:10px;min-height:62px}
+html[data-theme="studio"] .song-stamp {flex:0 0 34px;width:34px;height:34px;border-radius:5px;background:var(--song-accent);position:relative}
+html[data-theme="studio"] .song-stamp:after {content:"";position:absolute;inset:5px;border-radius:50%;background:repeating-radial-gradient(circle,#353b34 0 1px,#232822 2px 3px);border:7px solid #252a24;box-shadow:inset 0 0 0 3px var(--song-accent)}
+html[data-theme="studio"] .job-title {min-width:0;flex:1}
+html[data-theme="studio"] .job-item:has(.job-state:not(.done)) {padding-left:56px}
+html[data-theme="studio"] .job-item:has(.job-state:not(.done)) .song-stamp {position:absolute;left:10px;top:12px}
+html[data-theme="studio"] .timeline-wrap {background:var(--soft);border:1px solid var(--line);border-radius:16px;padding:20px}
+html[data-theme="studio"] .chord-block {background:var(--panel);border-color:var(--line)}
+html[data-theme="studio"] .chord-block.playing {border-color:var(--coral)}
+html[data-theme="studio"] :is(.chord-detail,.segment-editor) {background:transparent}
+html[data-theme="studio"] .track-switch button.active {background:var(--ink);color:var(--paper);border-color:var(--ink)}
+html[data-theme="studio"] .player-panel.player-dock {box-shadow:var(--desk-shadow);border-radius:18px}
+html[data-theme="studio"] .player-dock .player-toggle {width:46px;height:46px}
+html[data-theme="studio"] .library-card {overflow:hidden;transition:border-color .15s}
+html[data-theme="studio"] .library-sort button.active {background:var(--panel);color:var(--coral);box-shadow:none}
+html[data-theme="studio"] .track-switch button:disabled {background:var(--soft);color:var(--muted);border-color:var(--line);opacity:.65}
+html[data-theme="studio"] .library-open {padding-top:14px}
+html[data-theme="studio"] .library-sleeve {height:64px;position:relative;background:var(--song-accent);border-radius:7px;margin-bottom:18px;overflow:hidden}
+html[data-theme="studio"] .library-sleeve .record-disc {left:auto;right:22px;top:-12px;width:100px;height:100px}
+html[data-theme="studio"] .library-sleeve .record-disc:before {inset:32px}
+html[data-theme="studio"] .library-sleeve .record-disc:after {inset:46px}
+html[data-theme="studio"] .library-open .eyebrow {display:none}
+html[data-theme="studio"] .library-open h2 {min-height:54px}
+html[data-theme="studio"] .empty-graphic span {background:var(--soft);color:var(--coral);border-color:var(--line)}
+html[data-theme="studio"] :is(.empty-graphic span:nth-child(2),.empty-graphic span:nth-child(3)) {background:var(--panel)}
+html[data-theme="studio"] :is(.practice-controls button,.practice-controls select,.practice-controls input,.tab-settings select,.tab-settings input,.tab-options select,.tab-options input,.tab-toolbar button,.music-settings select,.stem-downloads a,.export-options,.chord-candidates button,.voicing-positions button,.chord-edit-dialog,.chord-edit-dialog input,.chord-edit-dialog select) {background:var(--panel);color:var(--ink);border-color:var(--line)}
+html[data-theme="studio"] .tab-system {color:var(--ink)}
+html[data-theme="studio"] .tab-system-string {border-color:var(--muted)}
+html[data-theme="studio"] .tab-system-string button {background:var(--ink);color:var(--paper);border-color:var(--panel)}
+html[data-theme="studio"] .tab-system-string button:hover {background:var(--coral);color:var(--button-ink)}
+html[data-theme="studio"] .tab-system-string button.suspect {background:#986522;color:#fff}
+html[data-theme="studio"] .tab-system-string button.edited {background:#346f63;color:#fff}
+html[data-theme="studio"] .tab-beat {background:repeating-linear-gradient(to bottom,var(--line),var(--line) 1px,transparent 1px,transparent 4px)}
+html[data-theme="studio"] .tab-barline {background:var(--muted)}
+html[data-theme="studio"] :is(.tab-system header,.tab-system-row>b) {color:var(--muted)}
+html[data-theme="studio"] .tab-warnings {background:#fff0cc;color:#72500e}
+html[data-theme="studio"][data-color-mode="dark"] .tab-warnings {background:#3d331f;color:#f2d596}
+html[data-theme="studio"] .toast {background:#29342b;color:#fff}
+html[data-theme="studio"] .toast.error {background:#a63422}
+html[data-theme="studio"] button:focus-visible,html[data-theme="studio"] a:focus-visible,html[data-theme="studio"] input:focus-visible,html[data-theme="studio"] select:focus-visible,html[data-theme="studio"] summary:focus-visible {outline:3px solid var(--selected-line);outline-offset:3px}
+/* Small appearance menu keeps the phone header uncluttered. */
+.color-menu {position:relative}
+.color-menu>summary {cursor:pointer;list-style:none;width:34px;height:36px;display:grid;place-items:center;border-radius:8px;background:var(--soft);color:var(--ink)}
+.color-menu>summary::-webkit-details-marker {display:none}
+.color-menu-body {position:absolute;right:0;top:46px;width:180px;padding:16px;background:var(--panel);color:var(--ink);border:1px solid var(--line);box-shadow:var(--desk-shadow);border-radius:12px;z-index:40}
+.color-menu-body label {display:block;font-size:13px;margin-bottom:8px}
+.color-menu-body select {width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--soft);font:inherit;font-size:14px}
+@media(max-width:1100px) {html[data-theme="studio"] .song-sleeve {flex-basis:90px;height:90px}html[data-theme="studio"] .song-heading {gap:18px}}
+@media(max-width:720px) {
+  html[data-theme="studio"] .top-actions {gap:6px}
+  html[data-theme="studio"] .topbar .icon-button {width:32px;height:36px}
+  html[data-theme="studio"] .song-sleeve {flex-basis:68px;height:76px;border-radius:4px 10px 10px 4px}
+  html[data-theme="studio"] .song-sleeve .record-disc {width:70px;height:70px;left:15px;top:2px}
+  html[data-theme="studio"] .song-sleeve .record-disc:before {inset:22px}
+  html[data-theme="studio"] .song-sleeve .record-disc:after {inset:32px}
+  html[data-theme="studio"] .sleeve-mark {font-size:8px;left:8px;bottom:6px}
+  html[data-theme="studio"] .song-heading {gap:14px;width:100%}
+  html[data-theme="studio"] #workTitle {font-size:23px}
+  html[data-theme="studio"] .workspace-head {gap:16px;padding-bottom:8px}
+  html[data-theme="studio"] .workspace-actions {justify-content:flex-end}
+  html[data-theme="studio"] .timeline-wrap {padding:14px 12px}
+  html[data-theme="studio"] .jobs-panel {background:var(--paper)}
+  html[data-theme="studio"] .left-rail {background:var(--paper)}
+  html[data-theme="studio"] .top-nav button.active {background:var(--panel)}
+}
+@media(max-width:360px) {html[data-theme="studio"] .brand-mark {display:none}html[data-theme="studio"] .brand b {font-size:18px}}
+@media(prefers-reduced-motion:reduce) {html[data-theme="studio"] .record-disc {animation:none!important}html[data-theme="studio"] .library-card {transition:none}}

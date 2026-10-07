@@ -10,7 +10,8 @@
   <link rel="stylesheet" href="/static/player-dock.css?v=1">
   <link rel="stylesheet" href="/static/fonts/fonts.css?v=1">
   <link rel="stylesheet" href="/static/studio.css?v=3">
-  <script src="/static/theme.js?v=3"></script>
+  <link rel="stylesheet" href="/static/listening-room.css?v=2">
+  <script src="/static/theme.js?v=5"></script>
 </head>
 <body>
   <header class="topbar">
@@ -20,7 +21,7 @@
       <button data-page="library"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>公開樂庫</span></button>
       <a id="adminNav" class="hidden" href="/admin"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M6 20v-2a6 6 0 0112 0v2"/></svg><span>管理</span></a>
     </nav>
-    <div class="top-actions"><label class="theme-control"><span>版面</span><select id="themeSelect" aria-label="版面風格"><option value="studio">新版</option><option value="classic">原版</option></select></label><span id="queueStatus" class="status-pill queue-pill">讀取佇列</span><span id="engineStatus" class="status-pill"><i></i>檢查分析引擎</span><form method="post" action="/logout"><button class="icon-button" title="登出" aria-label="登出"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h5a1 1 0 011 1v16a1 1 0 01-1 1h-5"/></svg></button></form></div>
+    <div class="top-actions"><label class="theme-control"><span>版面</span><select id="themeSelect" aria-label="版面風格"><option value="studio">新版</option><option value="classic">原版</option></select></label><details id="colorMenu" class="color-menu studio-only"><summary id="colorToggle" aria-label="外觀：跟隨系統" title="外觀：跟隨系統"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor" stroke="none"/></svg></summary><div class="color-menu-body"><label for="colorModeSelect">顯示模式</label><select id="colorModeSelect"><option value="system">跟隨系統</option><option value="light">淺色模式</option><option value="dark">暗色模式</option></select></div></details><span id="queueStatus" class="status-pill queue-pill">讀取佇列</span><span id="engineStatus" class="status-pill"><i></i>檢查分析引擎</span><form method="post" action="/logout"><button class="icon-button" title="登出" aria-label="登出"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h5a1 1 0 011 1v16a1 1 0 01-1 1h-5"/></svg></button></form></div>
   </header>
 
   <main class="shell" id="workspacePage">
@@ -67,7 +68,7 @@
 
       <div id="activeWorkspace" class="active-workspace hidden">
         <div class="workspace-head">
-          <div><p class="eyebrow" id="workMeta">ANALYSIS</p><h2 id="workTitle">—</h2><p id="workMessage" class="muted"></p></div>
+          <div class="song-heading"><div class="song-sleeve studio-only" aria-hidden="true"><div class="record-disc"></div><span class="sleeve-mark">CL / 33</span></div><div class="song-heading-copy"><p class="eyebrow" id="workMeta">ANALYSIS</p><h2 id="workTitle">—</h2><p id="workMessage" class="muted"></p></div></div>
           <div class="workspace-actions"><button class="secondary visibility-button hidden" id="visibilityToggle">私人分析</button><div class="export-menu"><button class="secondary" id="exportToggle">匯出 <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button><div id="exportOptions" class="export-options hidden"><a data-export="pdf">PDF 和弦表</a><a data-export="midi">MIDI 音符</a><a data-export="chordpro">ChordPro</a><a data-export="json">專案 JSON</a></div></div></div>
         </div>
 
@@ -171,6 +172,6 @@
   <script src="/static/chord-voicings.js?v=2" defer></script>
   <script src="/static/practice.js?v=1" defer></script>
   <script src="/static/chord-review.js?v=1" defer></script>
-  <script src="/static/app.js?v=46" defer></script>
+  <script src="/static/app.js?v=48" defer></script>
 </body>
 </html>

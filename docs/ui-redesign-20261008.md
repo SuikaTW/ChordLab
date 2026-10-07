@@ -1,5 +1,41 @@
 # Quiet Studio 與舊版備份
 
+## Listening Room / 暗色模式（第三版）
+
+頁首半黑半白圓形按鈕 → 顯示模式，可選「跟隨系統／淺色／暗色」。
+預設跟隨系統，瀏覽器以 chordlab:color-mode 保留選擇；系統外觀變更會即時更新。
+原版保持原有淺色外觀；返回新版時恢復原先模式。
+色彩切換不重建音訊、不重新合併音軌，也不改折疊面板、編輯或播放狀態。
+
+新增 listening-room.css：暖白／石墨底、鼠尾草綠操作重點、唱片封套式歌曲識別。
+唱片與封套全部由 CSS 繪製，不是下載封面，也不代表分析出的曲風或音訊特徵。
+同歌名具有一致的裝飾色，工作台、歌曲紀錄與樂庫共用。
+僅當主播放器播放時，工作台的唱片緩慢旋轉；暫停即停止，減少動態偏好會停用。
+沒有新增外部素材、JS 套件、音訊分析迴圈或網路請求。
+
+設計研究：
+
+- [Electronic Materials Office / Awwwards](https://www.awwwards.com/sites/electronic-materials-office)：Typography / Minimal 類別與黑、珊瑚、白的配色，Honorable Mention。
+- [Perpetuum / Awwwards](https://www.awwwards.com/sites/perpetuum-inc)：淺／暗色方向與有辨識度的色彩，Honorable Mention。
+- [teenage engineering 官方](https://teenage.engineering/)：音樂硬體的觸感與工具識別，轉譯為原創 CSS 唱片裝飾。
+- [Ableton Live 官方](https://www.ableton.com/en/live/)：參考音樂工具資訊分層的方向。
+
+借鑑方向，未複製圖片、品牌或程式碼；部分獎項單頁工具無法開啟，獎項資訊取自搜尋摘要。
+
+本次修改前的全部已追蹤原始碼：
+/mnt/sdc/backups/chordlab-ui-before-dark-20261008-wBfEoQkl/source-a25066f.tar.gz。
+Git 標記 ui-before-dark-20261008-a25066f，完整保留上版暖白前的 Quiet Studio。
+回退第三版必須成組還原 index.html、theme.js、app.js，避免 HTML 與 DOM 移動邏輯版本不一致；
+listening-room.css 是額外視覺層，不需要改資料庫或音訊。
+
+新增 tests/color_mode_browser_smoke.py：五種視窗寬度驗證三種色彩偏好、OS 即時變更、
+持久化、原版切回、外觀控制不重疊、暗色表單／TAB／修正視窗／播放器背景、
+主要按鈕與排序的 4.5:1 文字對比、真實播放不被色彩切換中斷，以及減少動態偏好。
+所有使用者資料寫入 API 均攔截；僅讀取現有分析，不觸發重分析。
+截圖存於上述 HDD 備份目錄 screenshots/。Chromium 測試不等同實機 Safari。
+本版驗證：84 個 Python 回歸測試、31 個 Deno 測試通過；新版／原版與色彩模式各五種寬度，
+和弦跟隨及局部修正各三種寬度的瀏覽器檢查通過。公開 HTTPS 新 CSS 回應 200，服務維持運行。
+
 ## 使用
 
 頁首「版面 → 新版／原版」只切換樣式，偏好保留在此瀏覽器。

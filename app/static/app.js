@@ -425,6 +425,12 @@ async function loadJobs() {
 function lastJobKey() {
   return `chordlab:last-job:${state.viewer?.key || "device"}`;
 }
+// Decorative identity, not a fetched album cover or an inferred musical feature.
+function songAccent(job) {
+  let hash = 0;
+  for (const char of String(job.title || job.id || '')) hash = (hash * 31 + char.codePointAt(0)) | 0;
+  return ['#c77753', '#7d8e73', '#8d80a8', '#bf9b50', '#638b96'][Math.abs(hash) % 5];
+}
 function renderJobs() {
   const list = $("#jobsList");
   if (!state.jobs.length) {
@@ -436,7 +442,7 @@ function renderJobs() {
     visible.map((job) =>
       `<button class="job-item ${
         !state.currentPublic && state.current?.id === job.id ? "active" : ""
-      }" data-job="${job.id}"><span class="job-title">${escapeHtml(job.title)}</span><span class="job-meta">${
+      }" style="--song-accent:${songAccent(job)}" data-job="${job.id}"><span class="song-stamp studio-only" aria-hidden="true"></span><span class="job-title">${escapeHtml(job.title)}</span><span class="job-meta">${
         new Date(job.created_at * 1000).toLocaleString("zh-TW", { month: "2-digit", day: "2-digit" })
       }${job.duration ? " · " + durationText(job.duration) : ""}${
         job.separate_stems ? " · " + (job.separation_model === "htdemucs_6s" ? "6 軌" : "4 軌") : ""
@@ -577,6 +583,7 @@ function renderWorkspace() {
   $("#emptyWorkspace").classList.add("hidden");
   $("#activeWorkspace").classList.remove("hidden");
   $("#workTitle").textContent = state.current.title;
+  $("#activeWorkspace").style.setProperty('--song-accent', songAccent(state.current));
   $("#workMeta").textContent =
     { queued: "排隊等候", working: "正在分析", done: "分析完成", failed: "分析失敗" }[state.current.status] ||
     "音樂分析";
@@ -693,7 +700,7 @@ async function loadLibrary() {
       return;
     }
     grid.innerHTML = jobs.map((job) =>
-      `<article class="library-card"><button class="library-open" data-public-job="${job.id}"><p class="eyebrow">${
+      `<article class="library-card" style="--song-accent:${songAccent(job)}"><button class="library-open" data-public-job="${job.id}"><span class="library-sleeve studio-only" aria-hidden="true"><span class="record-disc"></span></span><p class="eyebrow">${
         job.separate_stems
           ? (job.separation_model === "htdemucs_6s" ? "6-STEM ANALYSIS" : "4-STEM ANALYSIS")
           : "CHORD ANALYSIS"
@@ -824,6 +831,7 @@ function updatePlayerControls() {
   toggle.textContent = state.sourceLoading ? "…" : playing ? "❚❚" : "▶";
   toggle.setAttribute("aria-label", state.sourceLoading ? "正在準備音訊" : playing ? "暫停" : "播放");
   toggle.classList.toggle("playing", playing);
+  document.body.classList.toggle('music-playing', playing && !state.sourceLoading);
   toggle.disabled = state.sourceLoading;
 }
 function updateVolumeLabel() {
