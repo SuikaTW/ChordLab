@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=20">
+  <link rel="stylesheet" href="/static/style.css?v=21">
 </head>
 <body>
   <header class="topbar">
@@ -96,7 +96,8 @@
             <div class="detail-grid">
               <section class="chord-detail">
                 <div class="panel-title"><div><p class="eyebrow">GUITAR VOICING</p><h3 id="selectedChord">選擇一個和弦</h3></div><button id="playChord" class="icon-button" title="播放和弦" aria-label="播放和弦"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>
-                <div id="fretboard" class="tablature empty"><span>點一下時間軸上的和弦，這裡會顯示橫向六線譜、格數與音名。</span></div>
+                <div id="voicingPositions" class="voicing-positions hidden" role="group" aria-label="選擇和弦把位"></div>
+                <div id="fretboard" class="chord-diagram empty"><span>點選和弦，查看按法與不同把位。</span></div>
                 <p id="voicingNotes" class="voicing-notes"></p>
                 <div id="chordCandidates" class="chord-candidates hidden"></div>
               </section>
@@ -150,6 +151,7 @@
   <script src="/static/tab-layout.js?v=2" defer></script>
   <script src="/static/tab-studio.js?v=8" defer></script>
   <script src="/static/chord-theory.js?v=1" defer></script>
-  <script src="/static/app.js?v=34" defer></script>
+  <script src="/static/chord-voicings.js?v=1" defer></script>
+  <script src="/static/app.js?v=35" defer></script>
 </body>
 </html>

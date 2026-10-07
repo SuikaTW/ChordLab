@@ -17,6 +17,8 @@ Private music-analysis workspace for a single server. It accepts an upload or a 
 
 The browser provides synchronized multi-stem playback/mixing, method comparison, automatic key estimation, a Capo/play-key view, a chord editor, generated guitar voicings/string notes, and PDF, MIDI, ChordPro, and JSON exports.
 
+Click a timeline chord for a conventional vertical chord diagram and selectable positions. Strings run low E to high e, with mute/open markers, barre lines and numbered frets relative to Capo. Standard tuning only; familiar shapes are preferred and generated alternatives are labeled. These are reference voicings, not verified original fingerings, and never modify continuous TAB or recognition results.
+
 Continuous TAB never falls back to the full mix. The guitar workflow uses the experimental six-stem model and defaults to reviewing a guitar preview before optional transcription; all-stem MIDI is separate. An already isolated guitar recording can bypass separation. TAB uses estimated bars (two per desktop row, one per mobile row), with editable tempo/meter/first-beat timing. Clean suppresses extremely weak/short events; Full retains more detections. These layouts are estimates, not verified original scores.
 
 Users may explicitly publish a completed analysis to the shared library. Public analyses are searchable and ranked by unique signed-in viewers or favorites; exact matching public URL jobs with the same analysis options are reused instead of being processed again. Private jobs remain visible only to their owner and administrators.

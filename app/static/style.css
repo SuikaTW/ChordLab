@@ -340,3 +340,20 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 .method-options[open] { flex: 1 1 100%; margin-left: 0; }
 .method-options .method-switch { display: flex; flex-wrap: wrap; width: fit-content; max-width: 100%; }
 .method-options .method-switch button { flex: 0 0 auto; white-space: nowrap; padding: 8px 12px; }
+.voicing-positions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+.voicing-positions button { min-height: 44px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.voicing-positions button[aria-pressed="true"] { color: var(--ink); background: var(--panel); border-color: currentColor; }
+.voicing-positions button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.chord-diagram { display: flex; flex-direction: column; align-items: center; margin-top: 12px; min-height: 260px; }
+.chord-diagram.empty { justify-content: center; color: var(--muted); text-align: center; font-size: 13px; }
+svg.chord-chart { display: block; width: min(100%, 232px); height: auto; color: var(--ink); overflow: visible; }
+.chord-chart .chord-fret, .chord-chart .chord-string { stroke: currentColor; stroke-width: 1; opacity: .5; }
+.chord-chart .chord-nut { stroke-width: 5; opacity: 1; stroke-linecap: butt; }
+.chord-chart .chord-dot { fill: currentColor; stroke: none; }
+.chord-chart .chord-barre { stroke: currentColor; stroke-width: 15; stroke-linecap: round; }
+.chord-chart text { fill: currentColor; stroke: none; text-anchor: middle; font-family: inherit; }
+.chord-chart .chord-open-muted { font-size: 24px; }
+.chord-chart .chord-string-label { font-size: 13px; font-weight: 600; }
+.chord-chart .chord-string-number { font-size: 10px; opacity: .55; }
+.chord-chart .chord-fret-number { font-size: 12px; opacity: .7; }
+.chord-diagram-legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }

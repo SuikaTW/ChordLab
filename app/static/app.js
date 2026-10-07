@@ -34,7 +34,6 @@ const state = {
   libraryTimer: null,
 };
 const NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
-const TUNING = [40, 45, 50, 55, 59, 64];
 const TRACK_NAMES = {
   original: "原曲",
   harmony: "和聲伴奏",
@@ -1283,89 +1282,51 @@ async function deleteSegment() {
   await persist();
 }
 
-function parseChord(label) {
-  return ChordLabTheory.parseChord(label);
-}
-const voicingCache = new Map();
-function findVoicing(label) {
-  if (voicingCache.has(label)) return voicingCache.get(label);
-  const result = computeVoicing(label);
-  if (voicingCache.size >= 96) voicingCache.delete(voicingCache.keys().next().value);
-  voicingCache.set(label, result);
-  return result;
-}
-function computeVoicing(label) {
-  const parsed = parseChord(label);
-  if (!parsed) return null;
-  let best = null;
-  for (let base = 0; base <= 9; base++) {
-    const choices = TUNING.map((note) => {
-      const values = [-1];
-      for (let fret = 0; fret <= 12; fret++) {
-        if (parsed.tones.includes((note + fret) % 12) && (fret === 0 || (fret >= base && fret <= base + 4))) {
-          values.push(fret);
-        }
-      }
-      return values.slice(0, 5);
-    });
-    const walk = (index, shape) => {
-      if (index === 6) {
-        const played = shape.filter((x) => x >= 0);
-        if (played.length < 4) return;
-        const pcs = new Set(
-          shape.map((fret, i) => fret < 0 ? null : (TUNING[i] + fret) % 12).filter((x) => x !== null),
-        );
-        if (!parsed.tones.every((tone) => pcs.has(tone)) || !pcs.has(parsed.root)) return;
-        const fretted = played.filter((x) => x > 0),
-          span = fretted.length ? Math.max(...fretted) - Math.min(...fretted) : 0;
-        if (span > 4) return;
-        const bass = shape.findIndex((x) => x >= 0), bassPc = (TUNING[bass] + shape[bass]) % 12;
-        if (parsed.bass !== undefined && bassPc !== parsed.bass) return;
-        const score = shape.filter((x) => x < 0).length * 2 + span * 1.5 + played.reduce((a, b) =>
-              a + b, 0) * .12 +
-          (bassPc === parsed.root ? 0 : 2);
-        if (!best || score < best.score) best = { shape: [...shape], score, parsed };
-        return;
-      }
-      for (const fret of choices[index]) walk(index + 1, [...shape, fret]);
-    };
-    walk(0, []);
-  }
-  return best;
-}
+let currentVoicingLabel = null, currentVoicingIndex = 0;
 function renderVoicing(label, original = label) {
   const board = $("#fretboard");
+  const positions = $("#voicingPositions");
+  if (currentVoicingLabel !== label) {
+    currentVoicingLabel = label;
+    currentVoicingIndex = 0;
+  }
+  positions.replaceChildren();
+  positions.classList.add("hidden");
   if (!label) {
     $("#selectedChord").textContent = "選擇一個和弦";
-    board.className = "tablature empty";
-    board.innerHTML = "<span>點一下時間軸上的和弦，這裡會顯示橫向六線譜、格數與音名。</span>";
+    board.className = "chord-diagram empty";
+    board.innerHTML = "<span>點選和弦，查看按法與不同把位。</span>";
     $("#voicingNotes").textContent = "";
     return;
   }
   $("#selectedChord").textContent = state.capo ? `${label}（原和弦 ${original}）` : label;
-  const voicing = findVoicing(label);
-  if (!voicing) {
-    board.className = "tablature empty";
-    board.innerHTML = "<span>這個標記暫時無法產生標準吉他按法，可直接修改名稱。</span>";
+  const alternatives = ChordLabVoicings.positions(label);
+  if (!alternatives.length) {
+    board.className = "chord-diagram empty";
+    board.innerHTML = label === "N" || label === "X" ?
+      "<span>此段未辨識出和弦。</span>" : "<span>這個和弦暫時沒有適合的標準吉他按法。</span>";
     $("#voicingNotes").textContent = "";
     return;
   }
-  const rows = voicing.shape.map((fret, index) => ({
-    fret,
-    index,
-    string: ["E", "A", "D", "G", "B", "e"][index],
-    number: [6, 5, 4, 3, 2, 1][index],
-    note: fret < 0 ? "×" : NOTE_NAMES[(TUNING[index] + fret) % 12],
-  })).reverse();
-  board.className = "tablature";
-  board.innerHTML = rows.map((row) =>
-    `<div class="tab-string"><span class="tab-string-name">${row.string}</span><span class="tab-line"><i class="tab-fret ${
-      row.fret < 0 ? "muted" : row.fret === 0 ? "open" : ""
-    }">${row.fret < 0 ? "×" : row.fret}</i></span><span class="tab-note">${
-      row.fret < 0 ? "—" : row.note
-    }</span></div>`
-  ).join("");
+  currentVoicingIndex = Math.min(currentVoicingIndex, alternatives.length - 1);
+  const voicing = alternatives[currentVoicingIndex];
+  for (const [index, alternative] of alternatives.entries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = ChordLabVoicings.caption(alternative);
+    button.setAttribute("aria-pressed", String(index === currentVoicingIndex));
+    button.addEventListener("click", () => {
+      currentVoicingIndex = index;
+      renderVoicing(label, original);
+      positions.children[index]?.focus({ preventScroll: true });
+    });
+    positions.append(button);
+  }
+  positions.classList.toggle("hidden", alternatives.length < 2);
+  board.className = "chord-diagram";
+  board.innerHTML = ChordLabVoicings.diagram(voicing) +
+    '<div class="chord-diagram-legend"><span>× 不彈</span><span>○ 空弦</span><span>● 按弦</span><span>━ 橫按</span></div>';
   $("#voicingNotes").textContent =
-    `Capo ${state.capo}；六線譜由上到下是高音 e、B、G、D、A、低音 E。數字是相對於 Capo 的格數，0 是空弦，× 是不彈。`;
+    `${voicing.known ? "常用按法" : "替代按法（推算）"} · 標準調弦 · 左側數字為${state.capo ? `相對 Capo ${state.capo} 的` : ""}格數`;
 }
 document.addEventListener("DOMContentLoaded", init);
