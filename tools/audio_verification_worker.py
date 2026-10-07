@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--preview", type=Path)
     parser.add_argument("--cross-evidence", type=Path)
     parser.add_argument("--harmony-audio",type=Path)
+    parser.add_argument("--bass-audio",type=Path)
     parser.add_argument("--event-review",action="store_true")
     parser.add_argument("--original-audio",type=Path)
     args = parser.parse_args()
@@ -64,7 +65,8 @@ def main():
         harmony,_ = librosa.load(args.harmony_audio,sr=16000,mono=True) if args.harmony_audio else (samples,16000)
         if abs(len(harmony)-len(samples))/16000 > .05:
             raise ValueError("Harmony recording is not time-aligned")
-        payload["chords"],payload["chord_review"] = review_chords(harmony,notes,cross)
+        bass,_ = librosa.load(args.bass_audio,sr=16000,mono=True) if args.bass_audio else (None,None)
+        payload["chords"],payload["chord_review"] = review_chords(harmony,notes,cross,bass)
         payload["elapsed_seconds"] = round(time.monotonic()-started,3)
     write_midi(notes, args.midi)
     if args.preview:

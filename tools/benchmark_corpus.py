@@ -100,7 +100,7 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
                     models={name:json.loads((directory/(name+".json")).read_text()) for name in ("basic_pitch","gaps","tabcnn","hybrid")}
                     chords=json.loads((directory/"chordino.json").read_text())["chords"]
                     evidence=directory/"evidence.json"
-                    evidence.write_text(json.dumps(dict(models=models,methods={"chordino":chords},active_method="chordino")))
+                    evidence.write_text(json.dumps(dict(models=models,methods={"chordino":chords},active_method="chordino",harmony_notes=models['basic_pitch']['notes'])))
                     command=[str(main.GUITAR_PYTHON),str(ROOT/"tools/audio_verification_worker.py"),str(local_audio),str(output),str(midi),"--notes-cache",str(directory/"hybrid.json"),"--cross-evidence",str(evidence),"--harmony-audio",str(local_audio),*(["--event-review"] if engine=="event_verified" else [])]
                 else:
                     command=[str(main.GUITAR_PYTHON),str(ROOT/"tools/guitar_worker.py"),str(local_audio),str(output),str(midi),"--engine",engine,*(["--gaps-cache",str(directory/"gaps.json")] if engine=="hybrid" else [])]

@@ -251,7 +251,7 @@ function bindEvents() {
   $$("[data-export]").forEach((link) =>
     link.addEventListener("click", () => {
       if (state.current) {
-        const suffix = link.dataset.export === "midi" ? "" : `?capo=${state.capo}`;
+        const suffix = link.dataset.export === "midi" ? "" : `?capo=${state.capo}&method=${encodeURIComponent(state.method)}`;
         location.href = `/api/jobs/${state.current.id}/export/${link.dataset.export}${suffix}`;
       }
     })
@@ -483,7 +483,9 @@ async function openJob(id, isPublic = false, reveal = false) {
     state.currentPublic = isPublic;
     state.current = job;
     if (!isPublic) localStorage.setItem(lastJobKey(), id);
-    state.method = job.result?.active_method || "chordino";
+    const preferredMethod = job.result?.active_method || "chordino";
+    state.method = job.result?.event_verified_chord_review?.version >= 2 && job.result?.methods?.event_verified?.length &&
+      !job.result?.methods?.[preferredMethod]?.some(segment => segment.manual) ? "event_verified" : preferredMethod;
     state.track = job.result?.separation?.analysis_stem || "original";
     state.tracks = [state.track];
     state.capo = Math.min(11, Math.max(0, Math.round(Number(localStorage.getItem(`capo:${id}`)) || 0)));
@@ -1173,7 +1175,7 @@ function switchMethod(method, announce = true) {
   );
   renderTimeline();
   renderEditor();
-  if (announce) toast(`已切換到${method === "chord_v2" ? "和弦 v2（實驗）" : method === "ensemble" ? "雙引擎比對" : method === "chordino" ? "原本辨識" : "音符推算"}`);
+  if (announce) toast(`已切換到${{event_verified:"建議版",cross_verified:"交叉校驗",chord_v2:"和弦 v2（實驗）",ensemble:"雙引擎比對",chordino:"原本辨識"}[method] || "音符推算"}`);
 }
 
 function needsReview(segment) {
@@ -1187,7 +1189,7 @@ function renderTimeline() {
   summary.classList.toggle("hidden", !["ensemble", "chord_v2", "cross_verified", "event_verified"].includes(state.method));
   if (["cross_verified", "event_verified"].includes(state.method)) {
     const info = state.current.result[state.method === "event_verified" ? "event_verified_chord_review" : "cross_chord_review"] || {};
-    summary.textContent = `${state.method === "event_verified" ? "建議版" : "交叉校驗"} · 調整 ${info.changed_segments || 0} 段 · ${info.review_segments || 0} 段有候選；原版與 Key 保留，仍需試聽。`;
+    summary.textContent = `${state.method === "event_verified" ? "建議版" : "交叉校驗"} · ${info.split_baseline_segments ? `細分 ${info.split_baseline_segments} 個長段 · ` : ""}調整 ${info.changed_segments || 0} 段 · ${info.review_segments || 0} 段有候選；原版與 Key 保留，仍需試聽。`;
   }
   if (state.method === "chord_v2") {
     summary.textContent = "實驗版 · 分開檢查低音與和弦音，再依前後段落判斷；仍可能誤判，原版已保留。";

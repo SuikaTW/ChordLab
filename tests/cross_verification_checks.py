@@ -2,10 +2,11 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from tools.audio_verification import verify, synthesize, SR
-from tools.cross_evidence import CrossEvidence, tones, review_chords
+from tools.cross_evidence import CrossEvidence, tones, review_chords, stable_chord_runs, bass_pitch_class
 
 
 def event(midi,**extra):
@@ -112,6 +113,77 @@ class CrossTests(unittest.TestCase):
         cross=CrossEvidence(data,1.2,"gaps")
         self.assertEqual(review_chords(np.zeros(round(1.2*SR)),[event(45)],cross)[1]["changed_segments"],0)
         self.assertEqual(review_chords(synthesize([event(45)],1.2),[],cross)[1]["changed_segments"],0)
+
+    def test_internal_changes_in_a_long_baseline_are_checked_locally(self):
+        duration=8
+        notes=[dict(start=a+.1,end=b-.1,midi=p,velocity=.7) for a,b,pitches in
+               [(0,2,(48,52,55)),(2,4,(45,52,60)),(4,6,(50,54,57)),(6,8,(48,52,55))] for p in pitches]
+        baseline=[dict(start=0,end=8,chord='C')]
+        alternatives=[dict(start=a,end=b,chord=label,confidence=.9) for a,b,label in
+                      [(0,2,'C'),(2,4,'Am'),(4,6,'D'),(6,8,'C')]]
+        data={'methods':{'chordino':baseline,'btc':alternatives},'harmony_notes':notes}
+        cross=CrossEvidence(data,duration,'gaps')
+        output,summary=review_chords(synthesize(notes,duration),[],cross)
+        self.assertEqual([s['chord'] for s in output],['C','Am','D','C'])
+        self.assertEqual(summary['split_baseline_segments'],1)
+        self.assertEqual(summary['added_boundaries'],3)
+        self.assertEqual(output[0]['start'],0)
+        self.assertEqual(output[-1]['end'],8)
+        self.assertTrue(all(a['end']==b['start'] for a,b in zip(output,output[1:])))
+        self.assertEqual(baseline,[dict(start=0,end=8,chord='C')])
+        # Full harmonic context can validate piano-only passages; lack of
+        # isolated guitar must not prohibit all chord corrections.
+        self.assertEqual(summary['note_context'],'harmonic_track_not_extra_vote')
+        baseline[0]['manual']=True
+        output,summary=review_chords(synthesize(notes,duration),[],CrossEvidence(data,duration,'gaps'))
+        self.assertEqual(output,baseline)
+        self.assertEqual(summary['added_boundaries'],0)
+
+    def test_flicker_and_wrong_independent_boundaries_do_not_invent_chords(self):
+        stable=stable_chord_runs([dict(start=0,end=.2,chord='Abmaj7',confidence=.4),
+            dict(start=.2,end=2,chord='Ab',confidence=.8),dict(start=2,end=4,chord='Bb',confidence=.9)])
+        self.assertEqual([(s['start'],s['end'],s['chord']) for s in stable],[(0,2,'Ab'),(2,4,'Bb')])
+        baseline=[dict(start=0,end=8,chord='C')]
+        notes=[dict(start=.1,end=7.9,midi=p,velocity=.7) for p in (48,52,55)]
+        other=[dict(start=a,end=b,chord=c,confidence=.9) for a,b,c in [(0,2,'C'),(2,4,'Am'),(4,6,'D'),(6,8,'C')]]
+        cross=CrossEvidence({'methods':{'chordino':baseline,'btc':other},'harmony_notes':notes},8,'gaps')
+        output,summary=review_chords(synthesize(notes,8),[],cross)
+        self.assertTrue(all(s['chord']=='C' for s in output))
+        self.assertEqual(summary['changed_segments'],0)
+        silence=review_chords(np.zeros(8*SR),[],cross)
+        self.assertEqual(silence[1]['changed_segments'],0)
+        no_independent=CrossEvidence({'methods':{'chordino':baseline,'chord_v2':other}},8,'gaps')
+        self.assertEqual(review_chords(synthesize(notes,8),notes,no_independent)[1]['added_boundaries'],0)
+
+    def test_bass_periodicity_silence_noise_and_alignment_guards(self):
+        bass=synthesize([dict(start=0,end=1.2,midi=45,velocity=.7)],1.2)
+        self.assertEqual(bass_pitch_class(bass,.5),9)
+        self.assertIsNone(bass_pitch_class(np.zeros(2*SR),.5))
+        self.assertIsNone(bass_pitch_class(np.random.default_rng(2).normal(0,.1,2*SR),.5))
+        cross=CrossEvidence(evidence(),1.2,'gaps')
+        with self.assertRaises(ValueError): review_chords(bass,[],cross,np.zeros(SR))
+
+    def test_root_context_requires_independent_chord_notes_and_two_windows(self):
+        notes=[event(p) for p in (45,52,60)]
+        data={'methods':{'chordino':[dict(start=0,end=1.2,chord='C')],
+                         'btc':[dict(start=0,end=1.2,chord='Am')]},'harmony_notes':notes}
+        audio=synthesize(notes,1.2)
+        cross=CrossEvidence(data,1.2,'gaps')
+        # Simulate ambiguous harmonic-template fits, not a known true chord.
+        with patch('tools.cross_evidence.fit',side_effect=lambda pitches,*args: .45 if 45 in pitches else .4):
+            output,summary=review_chords(audio,[],cross)
+            self.assertEqual(output[0]['chord'],'Am')
+            self.assertEqual(summary['harmonic_root_changes'],1)
+            bass=synthesize([event(45)],1.2)
+            output,summary=review_chords(audio,[],cross,bass)
+            self.assertEqual(summary['bass_supported_changes'],1)
+            wrong_bass=synthesize([event(48)],1.2)
+            self.assertEqual(review_chords(audio,[],cross,wrong_bass)[0][0]['chord'],'C')
+            data['harmony_notes']=[]
+            self.assertEqual(review_chords(audio,notes,CrossEvidence(data,1.2,'gaps'),bass)[0][0]['chord'],'C')
+            data['harmony_notes']=notes
+            data['methods'].pop('btc')
+            self.assertEqual(review_chords(audio,[],CrossEvidence(data,1.2,'gaps'),bass)[0][0]['chord'],'C')
 
 
 if __name__=="__main__": unittest.main()

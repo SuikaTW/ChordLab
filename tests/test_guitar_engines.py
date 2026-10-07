@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from app import main
-from app.guitar_engines import paths
+from app.guitar_engines import paths, harmony_audio, recommendation_digest
 
 
 class GuitarEngineTests(unittest.TestCase):
@@ -42,6 +42,52 @@ class GuitarEngineTests(unittest.TestCase):
 
     def post(self, engine):
         return self.client.post(f"/api/jobs/song/guitar-analysis?engine={engine}", headers={"Origin": "http://testserver"})
+
+    def test_harmony_source_uses_real_separated_path_and_fingerprint(self):
+        self.assertEqual(harmony_audio(self.directory),self.directory/'audio.wav')
+        (self.directory/'harmony.wav').write_bytes(b'legacy')
+        self.assertEqual(harmony_audio(self.directory),self.directory/'harmony.wav')
+        (self.directory/'stems').mkdir()
+        (self.directory/'stems/harmony.wav').write_bytes(b'separated')
+        self.assertEqual(harmony_audio(self.directory),self.directory/'stems/harmony.wav')
+        old=recommendation_digest(self.directory,self.baseline)
+        (self.directory/'stems/harmony.wav').write_bytes(b'updated separation')
+        self.assertNotEqual(old,recommendation_digest(self.directory,self.baseline))
+        self.assertNotEqual(recommendation_digest(self.directory,self.baseline),
+            recommendation_digest(self.directory,{**self.baseline,'notes':[dict(start=0,end=1,midi=48)]}))
+
+    def test_chord_exports_use_requested_method_without_changing_saved_selection(self):
+        result={**self.baseline,'active_method':'chordino','methods':{**self.baseline['methods'],
+            'event_verified':[dict(start=0,end=4,chord='C'),dict(start=4,end=7,chord='Am'),dict(start=7,end=10,chord='D')]}}
+        with main.db() as c: c.execute('UPDATE jobs SET result=?',(json.dumps(result),))
+        response=self.client.get('/api/jobs/song/export/chordpro?method=event_verified')
+        self.assertEqual(response.status_code,200)
+        self.assertIn('[Am]',response.text)
+        self.assertIn('event_verified',response.text)
+        self.assertNotIn('[Am]',self.client.get('/api/jobs/song/export/chordpro').text)
+        self.assertEqual(self.client.get('/api/jobs/song/export/json?method=event_verified').json()['active_method'],'event_verified')
+        pdf=self.client.get('/api/jobs/song/export/pdf?method=event_verified')
+        self.assertEqual(pdf.status_code,200)
+        self.assertTrue(pdf.content.startswith(b'%PDF'))
+        self.assertTrue((self.directory/'chord-sheet-event_verified-capo-0.pdf').is_file())
+        self.assertEqual(self.client.get('/api/jobs/song/export/chordpro?method=missing').status_code,400)
+        self.assertEqual(self.client.get('/api/jobs/song/export/pdf?method=../invalid').status_code,400)
+        with main.db() as c:
+            saved=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
+        self.assertEqual(saved,result)
+
+    def test_successful_stale_recommendation_refresh_is_not_a_failed_retry_but_still_queued(self):
+        self.post('event_verified')
+        with main.db() as c: c.execute("UPDATE guitar_tasks SET status='done',attempts=3")
+        before=main.executor.submit.call_count
+        self.assertEqual(self.post('event_verified').status_code,202)
+        with main.db() as c:
+            task=c.execute('SELECT status,attempts FROM guitar_tasks').fetchone()
+            self.assertEqual((task['status'],task['attempts']),('queued',1))
+            self.assertEqual(c.execute('SELECT count(*) FROM guitar_submissions').fetchone()[0],2)
+            c.execute("UPDATE guitar_tasks SET status='failed',attempts=3")
+        self.assertEqual(main.executor.submit.call_count,before+1)
+        self.assertEqual(self.post('event_verified').status_code,429)
 
     def test_experiments_are_durable_idempotent_and_cannot_race(self):
         self.assertEqual(self.post("gaps").json()["status"], "queued")

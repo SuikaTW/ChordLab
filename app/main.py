@@ -43,7 +43,7 @@ from app.light_tasks import LightTaskPool, PoolBusy
 from app.preparation import DownloadPreparation
 from app.tab_models import TabDocument
 from app.chord_comparison import compare_chords
-from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available, recommendation_current, recommendation_digest, RECOMMENDATION_REVISION
+from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available, recommendation_current, recommendation_digest, harmony_audio, RECOMMENDATION_REVISION
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1321,7 +1321,8 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str) -> 
                 if task["engine"] != engine:
                     raise HTTPException(409, "這首歌已有另一個進階分析，請等它完成")
                 return {"status": task["status"]}
-            if task and task["engine"] == engine and task["attempts"] >= 3:
+            successful_refresh = bool(task and task['engine']==engine=='event_verified' and task['status']=='done')
+            if task and task["engine"] == engine and task["attempts"] >= 3 and not successful_refresh:
                 raise HTTPException(429, "已重試三次，請聯絡管理員")
             active = connection.execute("""SELECT
                 (SELECT COUNT(*) FROM jobs WHERE owner=? AND status IN ('queued','working')) +
@@ -1335,7 +1336,8 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str) -> 
             now = int(time.time())
             connection.execute("""INSERT INTO guitar_tasks(job_id,status,engine,created_at,updated_at) VALUES (?,'queued',?,?,?)
                 ON CONFLICT(job_id) DO UPDATE SET status='queued',
-                attempts=CASE WHEN guitar_tasks.engine=excluded.engine THEN attempts+1 ELSE 1 END,
+                attempts=CASE WHEN guitar_tasks.engine=excluded.engine AND excluded.engine='event_verified' AND guitar_tasks.status='done' THEN 1
+                    WHEN guitar_tasks.engine=excluded.engine THEN attempts+1 ELSE 1 END,
                 engine=excluded.engine,created_at=excluded.created_at,updated_at=excluded.updated_at""", (job_id, engine, now, now))
             connection.execute("INSERT INTO guitar_submissions(job_id,owner,engine,created_at) VALUES (?,?,?,?)", (job_id, row["owner"], engine, now))
         executor.submit(process_guitar_task, job_id)
@@ -2025,10 +2027,11 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
                         current = json.loads(job["result"] or "{}") if job else {}
                         input_digest=recommendation_digest(directory,current) if engine=="event_verified" else None
                         methods = current.get("methods",{})
-                        evidence_path.write_text(json.dumps({"models":models,"methods":{name:methods[name] for name in ("chordino","btc","chord_v2") if name in methods},"active_method":current.get("active_method")}),encoding="utf-8")
+                        evidence_path.write_text(json.dumps({"models":models,"methods":{name:methods[name] for name in ("chordino","btc","chord_v2") if name in methods},"active_method":current.get("active_method"),"harmony_notes":current.get('notes',[])}),encoding="utf-8")
                     run_command([str(GUITAR_PYTHON), str(ROOT / "tools/audio_verification_worker.py"), str(source),
                         str(temporary_notes), str(temporary_midi), "--notes-cache", str(base), "--references", str(reference_path), "--preview", str(preview_path),
-                        *(["--cross-evidence",str(evidence_path),"--harmony-audio",str(directory/"harmony.wav" if (directory/"harmony.wav").is_file() else directory/"audio.wav")] if engine in {"cross_verified", "event_verified"} else []),
+                        *(["--cross-evidence",str(evidence_path),"--harmony-audio",str(harmony_audio(directory))] if engine in {"cross_verified", "event_verified"} else []),
+                        *(["--bass-audio",str(directory/'stems/bass.wav')] if engine in {"cross_verified","event_verified"} and (directory/'stems/bass.wav').is_file() else []),
                         *(["--event-review", *(["--original-audio",str(directory/"audio.wav")] if direct_source is None else [])] if engine == "event_verified" else []),
                         *[argument for reference in references for argument in ("--reference-audio",reference["audio"])]], timeout=1800)
                 finally:
@@ -2435,11 +2438,15 @@ def build_audio_stream(job_id: str, source: Path, track: str) -> FileResponse:
     return FileResponse(output, media_type="audio/mp4")
 
 
-def result_for_export(request: Request, job_id: str) -> tuple[sqlite3.Row, dict, list[dict]]:
+def result_for_export(request: Request, job_id: str, method: str | None = None) -> tuple[sqlite3.Row, dict, list[dict]]:
     row = accessible_job(request, job_id)
     if not row["result"]:
         raise HTTPException(404, "尚無分析結果")
     result = serialize_job(row)["result"]
+    if method is not None:
+        if method not in {'basic_pitch','chordino','btc','ensemble','chord_v2','cross_verified','event_verified'} or not result['methods'].get(method):
+            raise HTTPException(400,'這首歌沒有這種和弦版本')
+        result['active_method']=method
     chords = result["methods"].get(result["active_method"], [])
     return row, result, chords
 
@@ -2481,9 +2488,9 @@ def export_stem_midi(request: Request, job_id: str, track: str) -> FileResponse:
 
 
 @app.get("/api/jobs/{job_id}/export/chordpro")
-def export_chordpro(request: Request, job_id: str, capo: int = 0) -> PlainTextResponse:
+def export_chordpro(request: Request, job_id: str, capo: int = 0, method: str | None = None) -> PlainTextResponse:
     capo = validate_capo(capo)
-    row, result, chords = result_for_export(request, job_id)
+    row, result, chords = result_for_export(request, job_id, method)
     key_info = result.get("key") or detect_key(chords) or {}
     lines = [f"{{title: {row['title']}}}", f"{{capo: {capo}}}", f"{{comment: ChordLab · {result['active_method']} · Original key {key_info.get('label', 'unknown')}}}", ""]
     for chord in chords:
@@ -2494,18 +2501,21 @@ def export_chordpro(request: Request, job_id: str, capo: int = 0) -> PlainTextRe
 
 
 @app.get("/api/jobs/{job_id}/export/json")
-def export_json(request: Request, job_id: str, capo: int = 0) -> Response:
+def export_json(request: Request, job_id: str, capo: int = 0, method: str | None = None) -> Response:
     capo = validate_capo(capo)
-    row, result, _chords = result_for_export(request, job_id)
+    row, result, _chords = result_for_export(request, job_id, method)
     payload = {"title": row["title"], "duration": row["duration"], "capo": capo, **result}
     return Response(json.dumps(payload, ensure_ascii=False, indent=2), media_type="application/json", headers={"Content-Disposition": 'attachment; filename="chordlab-project.json"'})
 
 
 @app.get("/api/jobs/{job_id}/export/pdf")
-def export_pdf(request: Request, job_id: str, capo: int = 0) -> FileResponse:
+def export_pdf(request: Request, job_id: str, capo: int = 0, method: str | None = None) -> FileResponse:
     capo = validate_capo(capo)
-    row, result, chords = result_for_export(request, job_id)
-    output = JOBS / job_id / f"chord-sheet-capo-{capo}.pdf"
+    row, result, chords = result_for_export(request, job_id, method)
+    selected=result['active_method']
+    if selected not in {'basic_pitch','chordino','btc','ensemble','chord_v2','cross_verified','event_verified'}:
+        raise HTTPException(400,'未知的和弦版本')
+    output = JOBS / job_id / f"chord-sheet-{selected}-capo-{capo}.pdf"
     styles = getSampleStyleSheet()
     embedded_font = ROOT / "vendor" / "fonts" / "NotoSansTC-VF.ttf"
     if embedded_font.is_file():

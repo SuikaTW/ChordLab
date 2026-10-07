@@ -4,7 +4,7 @@ from functools import lru_cache
 import hashlib
 import json
 
-RECOMMENDATION_REVISION = 3
+RECOMMENDATION_REVISION = 4
 
 ENGINES = {
     "basic_pitch": {"label": "原版", "profile": "guitar_v2", "file": "guitar"},
@@ -20,6 +20,10 @@ ENGINES = {
 def paths(directory: Path, engine: str) -> tuple[Path, Path]:
     name = ENGINES[engine]["file"]
     return directory / "stem-midi" / f"{name}.json", directory / "stem-midi" / f"{name}.mid"
+
+
+def harmony_audio(directory: Path) -> Path:
+    return next((directory/name for name in ('stems/harmony.wav','harmony.wav') if (directory/name).is_file()),directory/'audio.wav')
 
 
 def available(root: Path, engine: str) -> bool:
@@ -46,11 +50,11 @@ def recommendation_digest(directory: Path, result: dict) -> str:
             models[name] = _digest_file(str(path),info.st_size,info.st_mtime_ns,info.st_ino)
     methods = {name:result.get("methods",{}).get(name,[]) for name in ("chordino","btc","chord_v2")}
     audio = {}
-    for name in ("audio.wav","stems/guitar.wav","harmony.wav"):
+    for name in ("audio.wav","stems/guitar.wav","stems/harmony.wav","harmony.wav","stems/bass.wav"):
         path = directory/name
         if path.is_file():
             info=path.stat();audio[name]=(info.st_size,info.st_mtime_ns,info.st_ino)
-    data=dict(revision=RECOMMENDATION_REVISION,models=models,methods=methods,audio=audio,
+    data=dict(revision=RECOMMENDATION_REVISION,models=models,methods=methods,audio=audio,harmony_notes=result.get('notes',[]),
         active_method=result.get("active_method") if result.get("active_method") in methods else None)
     return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
