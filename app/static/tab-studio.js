@@ -50,20 +50,21 @@ const TabStudio = (() => {
       }
     });
     $("#playVerification").addEventListener("click", async () => {
-      if (!jobId || isBass() || state.tabEngine !== "verified") return;
+      if (!jobId || isBass() || !["verified", "cross_verified"].includes(state.tabEngine)) return;
       const id = jobId, player = $("#verificationPlayer"), main = $("#audioPlayer");
+      const engine = state.tabEngine;
       const request = ++verificationSerial;
       const time = main.currentTime;
       main.pause();
       state.resumeOnLoad = state.resumeAfterMix = false;
       $("#guitarPreviewPlayer").pause();
       player.pause();
-      player.src = `/api/jobs/${id}/verification-preview`;
+      player.src = `/api/jobs/${id}/verification-preview?engine=${engine}`;
       player.volume = state.volume;
       player.defaultPlaybackRate = player.playbackRate = Number($("#playbackSpeed").value);
       player.preservesPitch = player.webkitPreservesPitch = true;
       player.addEventListener("loadedmetadata", () => {
-        if (jobId !== id || state.tabEngine !== "verified" || request !== verificationSerial) return;
+        if (jobId !== id || state.tabEngine !== engine || request !== verificationSerial) return;
         player.currentTime = Math.min(time, player.duration || time);
         player.play().catch(() => toast("請按合成預覽的播放鍵"));
       }, { once: true });
@@ -247,7 +248,7 @@ const TabStudio = (() => {
     state.tabDensity = localStorage.getItem(tabStorageKey("density", id)) === "full" ? "full" : "clean";
     $$("[data-tab-density]").forEach((button) => button.classList.toggle("active", button.dataset.tabDensity === state.tabDensity));
     $("#guitarPreview").textContent = isBass() ? "試聽 Bass" : "試聽吉他";
-    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid"].includes(state.tabEngine));
+    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified"].includes(state.tabEngine));
     updateInstrumentControls();
   }
   function updateInstrumentControls() {
@@ -320,7 +321,7 @@ const TabStudio = (() => {
     $("#tabSource").textContent = "";
     $("#tabEngineMidi").classList.add("hidden");
     $("#tabEngineMidi").removeAttribute("href");
-    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid"].includes(state.tabEngine));
+    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified"].includes(state.tabEngine));
     controls();
     $("#generateGuitarTab").classList.add("hidden");
     $("#guitarPreview").classList.add("hidden");
@@ -443,6 +444,7 @@ const TabStudio = (() => {
           const refreshed = await api(`/api/jobs/${id}?include_notes=false`);
           if (!current() || dirty || saving) return;
           state.current = refreshed;
+          $("[data-method='cross_verified']")?.classList.toggle("hidden", !refreshed.result?.methods?.cross_verified?.length);
           state.tabJob = null;
           await loadContinuousTab();
           renderStemDownloads();
@@ -540,14 +542,16 @@ const TabStudio = (() => {
       : state.tabEngine === "tabcnn" ? "TabCNN · 實驗"
       : state.tabEngine === "hybrid" ? "整合 v2 · 實驗"
       : state.tabEngine === "verified" ? "音訊校驗 · 實驗"
+      : state.tabEngine === "cross_verified" ? "交叉校驗 · 實驗"
       : state.current.pure_guitar || state.current.result.guitar_tab?.source === "original"
       ? "純吉他"
       : "吉他分離軌";
     const warning = [];
     const verified = state.tabVerification, summary = $("#verificationSummary");
-    summary.classList.toggle("hidden", isBass() || state.tabEngine !== "verified" || !verified);
-    $("#verificationPreviewPanel").classList.toggle("hidden", isBass() || state.tabEngine !== "verified" || !verified);
+    summary.classList.toggle("hidden", isBass() || !["verified", "cross_verified"].includes(state.tabEngine) || !verified);
+    $("#verificationPreviewPanel").classList.toggle("hidden", isBass() || !["verified", "cross_verified"].includes(state.tabEngine) || !verified);
     if (verified) summary.textContent = `校驗 ${verified.reviewed_notes} 音 · 調整 ${verified.changed_notes} 音 · ${verified.uncertain_notes} 音仍有疑點。${verified.calibrated_pitches ? `使用 ${verified.calibrated_pitches} 個私人校準音高。` : ""}音頻相似度不是正確率；原版與你的修正保留。`;
+    if (verified?.version === 2) summary.textContent = `${verified.independent_models.length} 個音符模型 · ${verified.chord_sources.length} 種和弦證據 · ${verified.conflict_notes} 處交叉疑點 · 調整 ${verified.changed_notes} 音。和弦只作提示，原版保留；相似度不等於正確率。`;
     if (isBass() && diagnostics.omittedNotes) warning.push(`${diagnostics.omittedNotes} 音無法配置到目前弦格，可試 Drop D／五弦或檢查誤音`);
     const rhythmWarning = !rhythm.manual && !state.current.result.rhythm?.bpm
       ? `尚無拍點分析，暫以 ${rhythm.bpm} BPM 排版，可手動調整。`

@@ -11,6 +11,7 @@ from scipy.io import wavfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.audio_verification import verify, harmonic_profile, combine_profiles, synthesize
 from tools.guitar_worker import write_midi
+from tools.cross_evidence import CrossEvidence, review_chords
 
 
 def main():
@@ -22,11 +23,13 @@ def main():
     parser.add_argument("--references", type=Path)
     parser.add_argument("--reference-audio", action="append", type=Path, default=[])
     parser.add_argument("--preview", type=Path)
+    parser.add_argument("--cross-evidence", type=Path)
+    parser.add_argument("--harmony-audio",type=Path)
     args = parser.parse_args()
     started = time.monotonic()
     samples, _ = librosa.load(args.audio, sr=16000, mono=True)
     source = json.loads(args.notes_cache.read_text())
-    if source.get("duration") is not None and abs(float(source["duration"])-len(samples)/16000) > .05:
+    if source.get("profile") not in {"guitar_v2", "guitar_v1", "general"} and source.get("duration") is not None and abs(float(source["duration"])-len(samples)/16000) > .05:
         raise ValueError("Cached notes do not match recording duration")
     if len(samples)/16000 > 1200.25 or not np.isfinite(samples).all():
         raise ValueError("Invalid verification recording")
@@ -37,11 +40,19 @@ def main():
                 raise ValueError("Reference audio outside explicit allowlist")
             audio, _ = librosa.load(reference["audio"], sr=16000, mono=True)
             profiles.append(harmonic_profile(audio, reference["notes"]))
-    notes, summary = verify(samples, source["notes"], combine_profiles(profiles))
-    payload = dict(engine="verified", profile="guitar_verified_v1", duration=round(len(samples)/16000,4),
+    cross = CrossEvidence(json.loads(args.cross_evidence.read_text()),len(samples)/16000,source.get("engine","basic_pitch")) if args.cross_evidence else None
+    notes, summary = verify(samples, source["notes"], combine_profiles(profiles), cross=cross)
+    payload = dict(engine="cross_verified" if cross else "verified", profile="guitar_cross_verified_v1" if cross else "guitar_verified_v1", duration=round(len(samples)/16000,4),
         notes=notes, note_count=len(notes), refinement=summary, experimental=True,
         source_engine=source.get("engine", "basic_pitch"),
         elapsed_seconds=round(time.monotonic()-started,3), confidence_kind="uncalibrated_spectral_fit")
+    if cross:
+        payload.update(fingering_tuning="standard",fingering_capo=0)
+        harmony,_ = librosa.load(args.harmony_audio,sr=16000,mono=True) if args.harmony_audio else (samples,16000)
+        if abs(len(harmony)-len(samples))/16000 > .05:
+            raise ValueError("Harmony recording is not time-aligned")
+        payload["chords"],payload["chord_review"] = review_chords(harmony,notes,cross)
+        payload["elapsed_seconds"] = round(time.monotonic()-started,3)
     write_midi(notes, args.midi)
     if args.preview:
         wavfile.write(args.preview, 16000, (synthesize(notes,len(samples)/16000)*32767).astype(np.int16))

@@ -112,7 +112,7 @@ def fit(pitches, observed, dictionary):
     return float(residual**2)
 
 
-def verify(samples, notes, profile=None, passes=2):
+def verify(samples, notes, profile=None, passes=2, cross=None):
     samples = np.asarray(samples, dtype=float)
     if samples.ndim != 1 or not np.isfinite(samples).all() or passes not in (1,2):
         raise ValueError("Invalid verification audio/passes")
@@ -134,9 +134,12 @@ def verify(samples, notes, profile=None, passes=2):
         neighbors[index][window] = [other for other in active if other != index][:6]
     dictionary = {midi: template(midi, profile) for midi in range(36,100)}
     changes, reviewed, uncertain, losses, spent = [], set(), set(), [], 0
+    contexts = [cross.context(note) for note in notes] if cross else None
+    priority = sorted(range(len(notes)), key=lambda index: (not contexts[index]["conflict"], notes[index]["start"])) if cross else range(len(notes))
     for iteration in range(passes):
         accepted = 0
-        for index, note in enumerate(output):
+        for index in priority:
+            note = output[index]
             length = note["end"]-note["start"]
             if length < .18 or note.get("edited") or note.get("verification_changed"):
                 continue
@@ -151,7 +154,12 @@ def verify(samples, notes, profile=None, passes=2):
             baseline = [fit([note["midi"], *pitches], spec, dictionary) for pitches,spec in zip(active,observed)]
             reviewed.add(index); original = note["midi"]
             best, best_losses = original, baseline
-            for midi in [original-12, original-1, original+1, original+12]:
+            context = contexts[index] if cross else None
+            candidates = [original-12, original-1, original+1, original+12]
+            if cross:
+                candidates.extend(context["alternatives"])
+            best_rank = cross.rank(context,original,sum(baseline)/2) if cross else sum(baseline)/2
+            for midi in dict.fromkeys(candidates):
                 if not 40 <= midi <= 88 or any(midi in pitches for pitches in active):
                     continue
                 frequency = 440 * 2 ** ((midi-69)/12)
@@ -159,8 +167,13 @@ def verify(samples, notes, profile=None, passes=2):
                     continue
                 proposed = [fit([midi, *pitches], spec, dictionary) for pitches,spec in zip(active,observed)]
                 spent += 1
-                if all(before-after > max(.025, before*.08) for before,after in zip(baseline,proposed)) and sum(proposed) < sum(best_losses):
+                # Strong independent support for the original makes changes harder,
+                # never easier merely because an outside note contradicts a chord.
+                threshold, relative = (.04,.12) if cross and context["original_votes"] >= 2 else (.025,.08)
+                rank = cross.rank(context,midi,sum(proposed)/2) if cross else sum(proposed)/2
+                if all(before-after > max(threshold, before*relative) for before,after in zip(baseline,proposed)) and rank < best_rank:
                     best, best_losses = midi, proposed
+                    best_rank = rank
             if best != original:
                 note.update(midi=best, verification_changed=True, verification_original_midi=original,
                     verification_gain=round((sum(baseline)-sum(best_losses))/2,4))
@@ -168,7 +181,8 @@ def verify(samples, notes, profile=None, passes=2):
                     note.pop(field, None)
                 note["fingering_uncertain"] = True
                 changes.append(dict(index=index, before=original, after=best, start=note["start"],
-                    gain=note["verification_gain"], pass_number=iteration+1))
+                    gain=note["verification_gain"], pass_number=iteration+1,
+                    **({"models":sorted(context["support"].get(best,())),"chords":context["labels"]} if cross else {})))
                 losses.append((sum(baseline)/2, sum(best_losses)/2)); accepted += 1
             elif min(baseline) > .5:
                 uncertain.add(index)
@@ -187,7 +201,8 @@ def verify(samples, notes, profile=None, passes=2):
             surrounding = [[output[other]["midi"] for other in indices] for indices in neighbors[index]]
             before = [fit([change["before"],*pitches],spec,dictionary) for pitches,spec in zip(surrounding,observed)]
             after = [fit([change["after"],*pitches],spec,dictionary) for pitches,spec in zip(surrounding,observed)]
-            if not all(old-new > max(.025,old*.08) for old,new in zip(before,after)):
+            threshold, relative = (.04,.12) if cross and contexts[index]["original_votes"] >= 2 else (.025,.08)
+            if not all(old-new > max(threshold,old*relative) for old,new in zip(before,after)):
                 output[index] = dict(notes[index]); uncertain.add(index); reverted.add(index); undone = True
         if not undone:
             break
@@ -202,6 +217,14 @@ def verify(samples, notes, profile=None, passes=2):
         losses.append((sum(before)/2,sum(after)/2))
     for index in uncertain:
         output[index]["verification_uncertain"] = True
+    if cross:
+        for index,context in enumerate(contexts):
+            if context["conflict"]:
+                output[index]["cross_conflict"] = True
+            hint = context["hints"].get(output[index]["midi"])
+            if hint and not output[index].get("edited"):
+                output[index].update(hint)
+                output[index]["fingering_uncertain"] = False
     summary = dict(version=1, policy="two_window_harmonic_resynthesis", experimental=True,
         passes=iteration+1, reviewed_notes=len(reviewed), changed_notes=len(changes),
         uncertain_notes=len(uncertain), candidate_checks=spent, changes=changes[:200],
@@ -211,4 +234,10 @@ def verify(samples, notes, profile=None, passes=2):
         calibrated_pitches=len(profile or {}), timing_policy="preserve_original", note_count_policy="preserve_original",
         confidence_kind="uncalibrated_spectral_fit", learning_policy="confirmed_private_edits_only",
         limitations=["spectral_gain_is_not_accuracy", "no_string_identification", "no_automatic_training", "pitch_only"])
+    if cross:
+        summary.update(version=2,policy="independent_models_soft_harmony_audio_recheck",
+            independent_models=sorted(cross.streams),chord_sources=sorted(cross.chords),
+            conflict_notes=sum(context["conflict"] for context in contexts),
+            invalid_tab_events=cross.invalid_tab_events,correlated_models_counted_once=True,
+            chord_policy="soft_context_never_force_chord_tones", tab_policy="pitch_valid_model_hints_only")
     return output, summary

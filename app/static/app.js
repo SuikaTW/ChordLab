@@ -576,6 +576,15 @@ function renderWorkspace() {
       $(".method-switch").append(v2Button);
     }
     v2Button.classList.toggle("hidden", !state.current.result.methods.chord_v2?.length);
+    let crossButton = $("[data-method='cross_verified']");
+    if (!crossButton) {
+      crossButton = document.createElement("button");
+      crossButton.dataset.method = "cross_verified";
+      crossButton.textContent = "交叉校驗（實驗）";
+      crossButton.addEventListener("click", () => switchMethod("cross_verified"));
+      $(".method-switch").append(crossButton);
+    }
+    crossButton.classList.toggle("hidden", !state.current.result.methods.cross_verified?.length);
     $("[data-method='ensemble']").classList.toggle("hidden", !state.current.result.methods.ensemble?.length);
     if (!state.current.result.methods[state.method]?.length) {
       state.method = state.current.result.methods.chordino.length ? "chordino" : "basic_pitch";
@@ -977,7 +986,7 @@ async function loadContinuousTab() {
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
     state.tabNotes = payload?.notes || [];
     state.tabProfile = payload?.profile || "general";
-    state.tabVerification = engine === "verified" ? payload?.refinement : null;
+    state.tabVerification = ["verified", "cross_verified"].includes(engine) ? payload?.refinement : null;
     state.tabSource = payload ? instrument : "unavailable";
   } catch (error) {
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
@@ -1027,7 +1036,7 @@ function assignTabNotes(notes) {
         capo: state.tabInstrument === "bass" ? 0 : state.capo,
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
-        useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid"].includes(state.tabEngine) && $("#tabFingering").value === "model",
+        useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid", "cross_verified"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });
   });
@@ -1154,7 +1163,11 @@ function chords() {
 }
 function renderTimeline() {
   const summary = $("#comparisonSummary");
-  summary.classList.toggle("hidden", !["ensemble", "chord_v2"].includes(state.method));
+  summary.classList.toggle("hidden", !["ensemble", "chord_v2", "cross_verified"].includes(state.method));
+  if (state.method === "cross_verified") {
+    const info = state.current.result.cross_chord_review || {};
+    summary.textContent = `交叉校驗 · 調整 ${info.changed_segments || 0} 段 · ${info.review_segments || 0} 段有候選；原版與 Key 保留，仍需試聽。`;
+  }
   if (state.method === "chord_v2") {
     summary.textContent = "實驗版 · 分開檢查低音與和弦音，再依前後段落判斷；仍可能誤判，原版已保留。";
   }
@@ -1165,7 +1178,7 @@ function renderTimeline() {
   const list = chords(), duration = state.current.duration || 1, timeline = $("#timeline");
   timeline.innerHTML = list.map((segment, index) => {
     const played = playedChord(segment.chord);
-    const review = ["ensemble", "chord_v2"].includes(state.method) && needsReview(segment);
+    const review = ["ensemble", "chord_v2", "cross_verified"].includes(state.method) && needsReview(segment);
     return `<button class="chord-block ${
       index === state.selected ? "selected" : ""
     } ${review ? "needs-review" : ""}" ${review ? 'title="這段需要檢查，點選查看候選"' : ""} data-segment="${index}" style="width:${
@@ -1221,7 +1234,7 @@ function renderEditor() {
   renderCandidates(segment, editable);
 }
 function renderCandidates(segment, editable) {
-  const v2 = state.method === "chord_v2";
+  const v2 = ["chord_v2", "cross_verified"].includes(state.method);
   const box = $("#chordCandidates"), comparison = v2 && segment?.refinement?.uncertain ?
     { candidates: segment.refinement.alternatives } : state.method === "ensemble" ? segment?.comparison : null;
   const jobId = state.current?.id;
@@ -1229,7 +1242,7 @@ function renderCandidates(segment, editable) {
   box.replaceChildren();
   if (!comparison || !needsReview(segment)) return;
   const explanation = document.createElement("p");
-  explanation.textContent = v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
+  explanation.textContent = state.method === "cross_verified" ? "獨立和弦辨識有不同判斷；原音與吉他音符只作校驗，仍建議試聽確認。" : v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
     comparison.status === "detail" ? "根音與和弦家族相同，延伸音或低音不同。" : "BTC 對這一段有不同判斷；目前保留原本結果。";
   box.append(explanation);
   for (const candidate of comparison.candidates || []) {

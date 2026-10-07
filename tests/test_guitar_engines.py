@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import time
 import unittest
@@ -154,6 +155,59 @@ class GuitarEngineTests(unittest.TestCase):
         paths(self.directory,"basic_pitch")[0].unlink()
         self.assertEqual(self.post("verified").status_code,400)
         self.assertEqual(self.post("../../verified").status_code,400)
+
+    def test_cross_verified_queue_and_evidence_never_replace_baseline(self):
+        self.assertEqual(self.post("cross_verified").json()["status"],"queued")
+        baseline=paths(self.directory,"basic_pitch")[0].read_bytes()
+        def command(args,**kwargs):
+            self.assertIn("--cross-evidence",args)
+            data=json.loads(Path(args[args.index("--cross-evidence")+1]).read_text())
+            self.assertEqual(set(data["models"]),{"basic_pitch"})
+            self.assertEqual(data["methods"],self.baseline["methods"])
+            Path(args[3]).write_text(json.dumps({"profile":"guitar_cross_verified_v1","notes":[],"refinement":{"version":2}}))
+            Path(args[4]).write_bytes(b"MThd")
+            Path(args[args.index("--preview")+1]).write_bytes(b"RIFF")
+        with patch.object(main,"run_command",side_effect=command): main.process_guitar_task("song")
+        self.assertEqual(paths(self.directory,"basic_pitch")[0].read_bytes(),baseline)
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=cross_verified").json()["status"],"done")
+        self.assertEqual(self.client.get("/api/jobs/song/verification-preview?engine=cross_verified").content,b"RIFF")
+        self.assertEqual(self.client.get("/api/jobs/song/verification-preview?engine=../../secret").status_code,422)
+        self.assertFalse((self.directory/"stem-midi/cross-evidence.tmp.json").exists())
+        result=self.client.get("/api/jobs/song").json()["result"]
+        self.assertEqual(result["methods"],self.baseline["methods"])
+        self.assertEqual(self.post("cross_verified").json()["status"],"done")
+
+    def test_cross_chord_publication_preserves_selection_key_and_concurrent_edits(self):
+        self.post("cross_verified")
+        def command(args,**kwargs):
+            original=self.baseline["methods"]["chordino"]
+            checksum=hashlib.sha256(json.dumps(original,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+            Path(args[3]).write_text(json.dumps({"profile":"guitar_cross_verified_v1","notes":[],"chords":[{**original[0],"chord":"Am"}],
+                "chord_review":{"baseline_method":"chordino","baseline_digest":checksum,"changed_segments":1}}))
+            Path(args[4]).write_bytes(b"MThd")
+            Path(args[args.index("--preview")+1]).write_bytes(b"RIFF")
+        with main.db() as connection:
+            result={**self.baseline,"active_method":"basic_pitch","key":{"label":"C major"}}
+            connection.execute("UPDATE jobs SET result=?",(json.dumps(result),))
+        with patch.object(main,"run_command",side_effect=command): main.process_guitar_task("song")
+        current=self.client.get("/api/jobs/song").json()["result"]
+        self.assertEqual(current["active_method"],"basic_pitch")
+        self.assertEqual(current["key"],{"label":"C major"})
+        self.assertEqual(current["methods"]["chordino"],self.baseline["methods"]["chordino"])
+        self.assertEqual(current["methods"]["cross_verified"][0]["chord"],"Am")
+        # A late manual baseline edit must prevent stale chord publication.
+        def concurrent(args,**kwargs):
+            command(args,**kwargs)
+            with main.db() as connection:
+                result=json.loads(connection.execute("SELECT result FROM jobs").fetchone()[0])
+                result["methods"].pop("cross_verified",None)
+                result["methods"]["chordino"][0].update(chord="G",manual=True)
+                connection.execute("UPDATE jobs SET result=?",(json.dumps(result),))
+        with patch.object(main,"run_command",side_effect=concurrent): main.process_guitar_task("song")
+        current=self.client.get("/api/jobs/song").json()["result"]
+        self.assertNotIn("cross_verified",current["methods"])
+        self.assertEqual(current["methods"]["chordino"][0]["chord"],"G")
+        self.assertEqual(current["cross_chord_review"]["status"],"baseline_changed_during_analysis")
 
     def test_reference_audio_jobs_are_mounted_readonly_in_sandbox(self):
         other = main.JOBS / "reference"
