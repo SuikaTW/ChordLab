@@ -153,10 +153,19 @@
               .7 + Math.min(3, Math.max(0, old.end - note.start - .05) * 3) : 0;
             const melody = candidate.parent.placed.length === 1 && pitches.length === 1 ? candidate.parent.placed[0] : null;
             const connected = melody && note.start - melody.start <= .3 && Math.abs(note.midi - melody.midi) <= 5;
-            const continuity = !bass && connected ? Math.abs(string - melody.string) * .15 : 0;
+            const role = ["melody","accompaniment"].includes(options.role) ? options.role : "auto";
+            const continuity = !bass && connected ? Math.abs(string - melody.string) * (role === "melody" ? .65 : .15) : 0;
+            const repeatShape = !bass && role === "accompaniment" && old?.midi === note.midi && note.start-old.start < 2 ? -.3 : 0;
+            // Explicit techniques constrain a connection, not its pitch. Audio
+            // pitches alone do not establish a slide/hammer/pull-off.
+            const technique = !bass && ["slide","hammer_on","pull_off"].includes(note.technique) ? note.technique : null;
+            const previous = candidate.parent.placed.length === 1 ? candidate.parent.placed[0] : null;
+            const techniqueCost = technique && previous && note.start-previous.end < .15 && note.start-previous.start < .8 ?
+              (string !== previous.string ? 8 : technique === "slide" && (fret === 0 || previous.fret === 0) ||
+               technique === "hammer_on" && fret <= previous.fret || technique === "pull_off" && fret >= previous.fret ? 5 : -1) : 0;
             const cost = candidate.cost + fret * .025 + movement + crossing * 3 + continuity +
               preference + hintCost + spanCost(placed) - spanCost(candidate.placed) +
-              sustainCost;
+              sustainCost + repeatShape + techniqueCost;
             const active = [...candidate.active];
             active[string] = placedNote;
             const used = new Set(candidate.used);
@@ -190,6 +199,7 @@
       wideShapes: 0,
       rapidShifts: 0,
       sustainConflicts: 0,
+      techniqueConflicts: 0,
     };
     let previousShape = null;
     for (const placed of chunks) {
@@ -216,6 +226,13 @@
     const lastByString = Array(stringCount).fill(null);
     for (const note of assigned) {
       const previous = lastByString[note.string];
+      if (["slide","hammer_on","pull_off"].includes(note.technique) &&
+          (!previous || note.start-previous.end > .15 ||
+           note.technique === "slide" && (note.fret === 0 || previous.fret === 0) ||
+           note.technique === "hammer_on" && note.fret <= previous.fret ||
+           note.technique === "pull_off" && note.fret >= previous.fret)) {
+        note.suspicious = true; diagnostics.techniqueConflicts++;
+      }
       if (previous && previous.end > note.start) {
         if (previous.end > note.start + .08 && previous.midi !== note.midi) diagnostics.sustainConflicts++;
         previous.end = note.start;

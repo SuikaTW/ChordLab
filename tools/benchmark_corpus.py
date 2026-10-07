@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,8 +23,19 @@ from tools.benchmark_guitar import score
 
 def weighted_chords(reference, predicted, duration):
     from app.chord_comparison import identity
+    def decomposed(label):
+        parsed=identity(label)
+        if parsed is not None:return parsed
+        # GuitarSet also has rich Harte labels such as D#:sus2(7)/1.
+        # Exact agreement must not pretend these equal a simpler chord, but
+        # root/family metrics can still read their stated root and base quality.
+        match=re.fullmatch(r'([A-G](?:#|b)?):([A-Za-z0-9]+)(?:\([^)]*\))?(?:/[#b]?\d+)?',label)
+        if not match:return None
+        root=identity(match[1])
+        qualities={'maj':'','min':'m','min7':'m7','maj6':'6','min6':'m6','minmaj7':'mMaj7'}
+        return (root[0],qualities.get(match[2],match[2]),None) if root else None
     boundaries=sorted({0.,duration,*[max(0.,min(duration,float(s[k]))) for segments in (reference,predicted) for s in segments for k in ("start","end")]})
-    matched,covered=0.,0.
+    matched,covered,root_matched,family_matched,unsupported=0.,0.,0.,0.,0.
     for left,right in zip(boundaries,boundaries[1:]):
         center=(left+right)/2
         expected=next((s["chord"] for s in reference if s["start"]<=center<s["end"]),None)
@@ -31,7 +43,29 @@ def weighted_chords(reference, predicted, duration):
         if expected is None: continue
         covered+=right-left
         if actual is not None and (expected==actual or identity(expected) is not None and identity(expected)==identity(actual)): matched+=right-left
-    return dict(annotated_seconds=round(covered,3),exact_chord_duration_agreement=round(matched/max(covered,1e-12),4))
+        unsupported+=(right-left)*int(expected not in {'N','X'} and identity(expected) is None)
+        left_id,right_id=decomposed(expected),decomposed(actual) if actual is not None else None
+        if left_id is not None and right_id is not None:
+            root_matched+=(right-left)*int(left_id[0]==right_id[0])
+            family_matched+=(right-left)*int(left_id[:2]==right_id[:2])
+        elif expected==actual and expected in {'N','X'}:
+            root_matched+=right-left;family_matched+=right-left
+    def changes(segments):
+        return [s['start'] for previous,s in zip(segments,segments[1:]) if decomposed(previous['chord'])!=decomposed(s['chord']) and
+                s['start']>0 and abs(previous['end']-s['start'])<.1]
+    expected_changes=changes(reference);actual_changes=changes(predicted)
+    unused=set(range(len(actual_changes)));correct=0
+    for point in expected_changes:
+        choices=[index for index in unused if abs(point-actual_changes[index])<=.25]
+        if choices:
+            unused.remove(min(choices,key=lambda index:abs(point-actual_changes[index])));correct+=1
+    precision=correct/max(1,len(actual_changes));recall=correct/max(1,len(expected_changes))
+    return dict(annotated_seconds=round(covered,3),exact_chord_duration_agreement=round(matched/max(covered,1e-12),4),
+        root_duration_agreement=round(root_matched/max(covered,1e-12),4),family_duration_agreement=round(family_matched/max(covered,1e-12),4),
+        unsupported_exact_reference_seconds=round(unsupported,3),
+        boundary_tolerance_seconds=.25,boundary_reference_count=len(expected_changes),boundary_predicted_count=len(actual_changes),
+        boundary_matched=correct,boundary_f1=round(2*precision*recall/max(1e-12,precision+recall),4),
+        metric_policy='exact_label_separate_from_root_and_base_quality_rich_harte_decomposition')
 
 
 def run(root, infer=False, limit=None, reuse_raw_report=None):
@@ -60,7 +94,7 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
                 raise RuntimeError("Live analyses active; rerun the resumable benchmark later")
     code_paths=["tools/basic_pitch_worker.py","tools/guitar_worker.py","tools/guitar_refinement.py",
         "tools/audio_verification.py","tools/audio_verification_worker.py","tools/cross_evidence.py",
-        "tools/event_verification.py","tools/temporal_verification.py","tools/chordino_worker.py","app/static/tab-engine.js"]
+        "tools/event_verification.py","tools/temporal_verification.py","tools/harmonic_context.py","tools/chordino_worker.py","app/static/tab-engine.js"]
     code_hashes={name:checksum(ROOT/name) for name in code_paths}
     pipeline=hashlib.sha256(json.dumps(code_hashes,sort_keys=True).encode()).hexdigest()
     evaluation_paths=["tools/benchmark_corpus.py","tools/benchmark_guitar.py",
@@ -110,7 +144,7 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
                 print(record["id"],engine,"seconds",round(time.monotonic()-started,1),flush=True)
             if not path.exists(): continue
             predicted=json.loads(path.read_text())
-            report=dict(id=record["id"],split=record["split"],style=record["style"],engine=engine,prediction=str(path.relative_to(root)),
+            report=dict(id=record["id"],split=record["split"],style=record["style"],genre=record.get('genre'),source_condition=record.get('source_condition','real_acoustic_guitar'),engine=engine,prediction=str(path.relative_to(root)),
                 reference_sha256=record["reference_sha256"],prediction_sha256=checksum(path))
             if "notes" in predicted:
                 notes=predicted["notes"]

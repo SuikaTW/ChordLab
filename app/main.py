@@ -273,6 +273,8 @@ def init_db() -> None:
         guitar_columns = {row[1] for row in connection.execute("PRAGMA table_info(guitar_tasks)")}
         if "engine" not in guitar_columns:
             connection.execute("ALTER TABLE guitar_tasks ADD COLUMN engine TEXT NOT NULL DEFAULT 'basic_pitch'")
+        if 'parameters' not in guitar_columns:
+            connection.execute("ALTER TABLE guitar_tasks ADD COLUMN parameters TEXT")
         had_submissions = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='guitar_submissions'").fetchone()
         # Keep an append-only quota record: switching failed engines (or deleting
         # a song) must not erase previous CPU requests from the daily allowance.
@@ -747,6 +749,7 @@ def get_job(request: Request, job_id: str, include_notes: bool = True) -> dict:
     if not payload["mine"] and not is_admin(request.state.identity):
         payload.pop("owner", None)
         payload.pop("source", None)
+        if payload.get('result'):payload['result'].pop('local_chord_review',None)
     with db() as connection:
         add_queue_metadata(connection, [payload])
     return payload
@@ -824,6 +827,8 @@ def get_public_job(request: Request, job_id: str, include_notes: bool = True) ->
     payload["view_count"] = view_count
     payload["favorite_count"] = favorite_count
     payload["is_favorite"] = bool(is_favorite)
+    if not payload['mine'] and not is_admin(request.state.identity) and payload.get('result'):
+        payload['result'].pop('local_chord_review',None)
     payload.pop("owner", None)
     payload.pop("source", None)
     return payload
@@ -1311,7 +1316,7 @@ def start_guitar_task(request: Request, job_id: str, engine: str = "basic_pitch"
     return enqueue_refinement_task(request, row, engine)
 
 
-def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str) -> dict:
+def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str, parameters: dict | None = None) -> dict:
     """Shared durable queue and quotas for optional heavy refinement work."""
     job_id = row["id"]
     with job_submission_lock:
@@ -1320,8 +1325,10 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str) -> 
             if task and task["status"] in {"queued", "working"}:
                 if task["engine"] != engine:
                     raise HTTPException(409, "這首歌已有另一個進階分析，請等它完成")
+                if engine=='chord_review' and json.loads(task['parameters'] or '{}')!=parameters:
+                    raise HTTPException(409,'這首歌已有另一個範圍正在重查')
                 return {"status": task["status"]}
-            successful_refresh = bool(task and task['engine']==engine=='event_verified' and task['status']=='done')
+            successful_refresh = bool(task and task['engine']==engine and engine in {'event_verified','chord_review'} and task['status']=='done')
             if task and task["engine"] == engine and task["attempts"] >= 3 and not successful_refresh:
                 raise HTTPException(429, "已重試三次，請聯絡管理員")
             active = connection.execute("""SELECT
@@ -1334,14 +1341,118 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str) -> 
                 if recent >= DAILY_JOB_LIMIT:
                     raise HTTPException(429, "今日進階分析額度已用完")
             now = int(time.time())
-            connection.execute("""INSERT INTO guitar_tasks(job_id,status,engine,created_at,updated_at) VALUES (?,'queued',?,?,?)
+            connection.execute("""INSERT INTO guitar_tasks(job_id,status,engine,created_at,updated_at,parameters) VALUES (?,'queued',?,?,?,?)
                 ON CONFLICT(job_id) DO UPDATE SET status='queued',
-                attempts=CASE WHEN guitar_tasks.engine=excluded.engine AND excluded.engine='event_verified' AND guitar_tasks.status='done' THEN 1
+                attempts=CASE WHEN guitar_tasks.engine=excluded.engine AND excluded.engine IN ('event_verified','chord_review') AND guitar_tasks.status='done' THEN 1
                     WHEN guitar_tasks.engine=excluded.engine THEN attempts+1 ELSE 1 END,
-                engine=excluded.engine,created_at=excluded.created_at,updated_at=excluded.updated_at""", (job_id, engine, now, now))
+                engine=excluded.engine,parameters=excluded.parameters,created_at=excluded.created_at,updated_at=excluded.updated_at""", (job_id, engine, now, now,json.dumps(parameters) if parameters else None))
             connection.execute("INSERT INTO guitar_submissions(job_id,owner,engine,created_at) VALUES (?,?,?,?)", (job_id, row["owner"], engine, now))
         executor.submit(process_guitar_task, job_id)
     return {"status": "queued"}
+
+
+CHORD_METHODS={'basic_pitch','chordino','btc','ensemble','chord_v2','cross_verified','event_verified','local_review'}
+
+
+class LocalChordReview(BaseModel):
+    start: float = Field(ge=0,allow_inf_nan=False)
+    end: float = Field(gt=0,allow_inf_nan=False)
+    method: str = Field(max_length=32)
+
+
+def chord_review_digest(directory: Path,result: dict,method: str) -> str:
+    payload={'inputs':recommendation_digest(directory,result),'method':method,'segments':result.get('methods',{}).get(method,[])}
+    return hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+@app.get('/api/jobs/{job_id}/chord-review')
+def local_chord_review_status(request: Request,job_id: str) -> dict:
+    row=editable_job(request,job_id)
+    result=json.loads(row['result'] or '{}')
+    payload=result.get('local_chord_review',{'status':'pending'})
+    with db() as connection:
+        task=connection.execute('SELECT status,engine,parameters FROM guitar_tasks WHERE job_id=?',(job_id,)).fetchone()
+    if task and task['engine']=='chord_review' and task['status'] in {'queued','working','failed'}:
+        return {'status':task['status'],'request':json.loads(task['parameters'] or '{}')}
+    if payload.get('status')=='done' and payload.get('input_digest')!=chord_review_digest(JOBS/job_id,result,payload['method']):
+        return {'status':'stale','request':payload.get('request')}
+    return payload
+
+
+@app.post('/api/jobs/{job_id}/chord-review',status_code=202)
+def start_local_chord_review(request: Request,job_id: str,review: LocalChordReview) -> dict:
+    row=editable_job(request,job_id)
+    result=json.loads(row['result'] or '{}')
+    if row['status']!='done' or review.method not in CHORD_METHODS or not result.get('methods',{}).get(review.method):
+        raise HTTPException(400,'這首歌沒有可重查的和弦版本')
+    if not .5<=review.end-review.start<=90 or review.end>float(row['duration'] or 0)+.02:
+        raise HTTPException(400,'請選取 0.5～90 秒且不超過歌曲長度的範圍')
+    if not GUITAR_PYTHON.is_file():raise HTTPException(503,'重查引擎尚未安裝')
+    source=harmony_audio(JOBS/job_id)
+    job_file(job_id,str(source.relative_to(JOBS/job_id)))
+    parameters=review.model_dump()
+    return enqueue_refinement_task(request,row,'chord_review',parameters)
+
+
+@app.post('/api/jobs/{job_id}/chord-review/apply')
+def apply_local_chord_review(request: Request,job_id: str) -> dict:
+    owned=editable_job(request,job_id)
+    with db() as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        row=connection.execute('SELECT result FROM jobs WHERE id=?',(job_id,)).fetchone()
+        if not row:raise HTTPException(404,'找不到歌曲')
+        result=json.loads(row['result'] or '{}');proposal=result.get('local_chord_review',{})
+        task=connection.execute('SELECT status FROM guitar_tasks WHERE job_id=?',(job_id,)).fetchone()
+        if task and task['status'] in {'queued','working'}:raise HTTPException(409,'請等進階分析完成後再套用')
+        if proposal.get('status')!='done':raise HTTPException(409,'尚無可套用的重查結果')
+        if proposal.get('input_digest')!=chord_review_digest(JOBS/job_id,result,proposal['method']):
+            raise HTTPException(409,'原始資料已修改，請重新檢查')
+        if proposal['method']!='local_review' and any(s.get('manual') for s in result.get('methods',{}).get('local_review',[])):
+            raise HTTPException(409,'局部修正版已有人工修正，請切到該版本再重查，避免覆蓋')
+        # Preserve the whole source and all manual entries. Only explicit
+        # confirmation publishes a separate method, never the raw baseline.
+        from app.chord_review import validate_proposal
+        parameters=proposal['request']
+        try:
+            checked=validate_proposal(proposal['chords'],result['methods'][proposal['method']],
+                parameters['start'],parameters['end'],float(owned['duration']))
+        except ValueError as exc:raise HTTPException(409,'重查結果未通過保留範圍檢查，請重新分析') from exc
+        result.setdefault('methods',{})['local_review']=checked
+        result['active_method']='local_review'
+        proposal['status']='applied'
+        connection.execute('UPDATE jobs SET result=?,updated_at=? WHERE id=?',(json.dumps(result,ensure_ascii=False),int(time.time()),job_id))
+    return {'ok':True,'method':'local_review'}
+
+
+def process_local_chord_review(job_id: str,initial: sqlite3.Row) -> None:
+    directory=JOBS/job_id;result=json.loads(initial['result'] or '{}')
+    with db() as connection:
+        parameters=json.loads(connection.execute('SELECT parameters FROM guitar_tasks WHERE job_id=?',(job_id,)).fetchone()[0])
+    method=parameters['method'];checksum=chord_review_digest(directory,result,method)
+    nonce=uuid.uuid4().hex
+    evidence=directory/f'.local-chord-review-{nonce}.input.json';temporary=directory/f'.local-chord-review-{nonce}.tmp.json'
+    evidence.write_text(json.dumps({'methods':{name:segments for name,segments in result.get('methods',{}).items() if name in {'chordino','btc','chord_v2'}},
+        'harmony_notes':result.get('notes',[]),'review_baseline':{'method':method,'segments':result['methods'][method]}}))
+    command=[str(GUITAR_PYTHON),str(ROOT/'tools/chord_review_worker.py'),str(harmony_audio(directory)),str(evidence),str(temporary),
+        '--start',str(parameters['start']),'--end',str(parameters['end'])]
+    if (directory/'stems/bass.wav').is_file():command+=['--bass',str(directory/'stems/bass.wav')]
+    try:
+        with heavy_analysis_slot:run_command(command,timeout=300)
+        refined=json.loads(temporary.read_text())
+        from app.chord_review import validate_proposal
+        segments=validate_proposal(refined['chords'],result['methods'][method],parameters['start'],parameters['end'],float(initial['duration']))
+        with db() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row=connection.execute('SELECT result FROM jobs WHERE id=?',(job_id,)).fetchone()
+            if not row:return
+            latest=json.loads(row['result'] or '{}')
+            fresh=chord_review_digest(directory,latest,method)==checksum
+            latest['local_chord_review']={'status':'done' if fresh else 'stale','request':parameters,'method':method,
+                'input_digest':checksum,'chords':segments,'summary':refined['summary']}
+            connection.execute('UPDATE jobs SET result=?,updated_at=? WHERE id=?',(json.dumps(latest,ensure_ascii=False),int(time.time()),job_id))
+            connection.execute("UPDATE guitar_tasks SET status='done',updated_at=? WHERE job_id=?",(int(time.time()),job_id))
+    finally:
+        evidence.unlink(missing_ok=True);temporary.unlink(missing_ok=True)
 
 
 @app.get("/api/jobs/{job_id}/chord-refinement")
@@ -1422,6 +1533,9 @@ def process_guitar_task(job_id: str) -> None:
             return
         if engine == "chord_v2":
             process_chord_refinement(job_id, initial)
+            return
+        if engine=='chord_review':
+            process_local_chord_review(job_id,initial)
             return
         with heavy_analysis_slot:
             if engine != "basic_pitch":
@@ -2232,7 +2346,7 @@ class ChordSegment(BaseModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     chord: str = Field(min_length=1, max_length=24)
-    confidence: float | None = None
+    confidence: float | None = Field(default=None,allow_inf_nan=False)
 
 
 class ChordUpdate(BaseModel):
@@ -2242,7 +2356,7 @@ class ChordUpdate(BaseModel):
 
 @app.put("/api/jobs/{job_id}/chords")
 def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
-    if update.method not in {"basic_pitch", "chordino", "ensemble", "chord_v2", "cross_verified", "event_verified"}:
+    if update.method not in CHORD_METHODS-{'btc'}:
         raise HTTPException(400, "未知的分析方式")
     row = editable_job(request, job_id)
     if not row["result"]:
@@ -2263,13 +2377,18 @@ def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
         if update.method not in result.get("methods", {}):
             raise HTTPException(400, "這首歌沒有這種分析結果")
         previous = {(s["start"], s["end"], s["chord"]): s for s in result["methods"][update.method]}
-        if update.method in {"chord_v2", "cross_verified", "event_verified"}:
+        if update.method in {"chord_v2", "cross_verified", "event_verified",'local_review'}:
             for segment in chords:
                 old = previous.get((segment["start"], segment["end"], segment["chord"]))
                 if old and old.get("refinement"):
                     segment["refinement"] = old["refinement"]
                 else:
                     segment["manual"] = True
+                if old and old.get('manual'):segment['manual']=True
+        elif update.method in {'basic_pitch','chordino'}:
+            for segment in chords:
+                old=previous.get((segment['start'],segment['end'],segment['chord']))
+                if not old or old.get('manual'):segment['manual']=True
         if update.method == "ensemble":
             for segment in chords:
                 old = previous.get((segment["start"], segment["end"], segment["chord"]))
@@ -2443,8 +2562,11 @@ def result_for_export(request: Request, job_id: str, method: str | None = None) 
     if not row["result"]:
         raise HTTPException(404, "尚無分析結果")
     result = serialize_job(row)["result"]
+    result.setdefault('active_method','chordino')
+    if row['owner']!=request.state.identity['sub'] and not is_admin(request.state.identity):
+        result.pop('local_chord_review',None)
     if method is not None:
-        if method not in {'basic_pitch','chordino','btc','ensemble','chord_v2','cross_verified','event_verified'} or not result['methods'].get(method):
+        if method not in CHORD_METHODS or not result['methods'].get(method):
             raise HTTPException(400,'這首歌沒有這種和弦版本')
         result['active_method']=method
     chords = result["methods"].get(result["active_method"], [])
@@ -2513,7 +2635,7 @@ def export_pdf(request: Request, job_id: str, capo: int = 0, method: str | None 
     capo = validate_capo(capo)
     row, result, chords = result_for_export(request, job_id, method)
     selected=result['active_method']
-    if selected not in {'basic_pitch','chordino','btc','ensemble','chord_v2','cross_verified','event_verified'}:
+    if selected not in CHORD_METHODS:
         raise HTTPException(400,'未知的和弦版本')
     output = JOBS / job_id / f"chord-sheet-{selected}-capo-{capo}.pdf"
     styles = getSampleStyleSheet()

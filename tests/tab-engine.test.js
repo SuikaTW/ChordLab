@@ -1,6 +1,28 @@
 import "../app/static/tab-engine.js";
 
 const { assign } = globalThis.ChordLabTab;
+Deno.test("explicit slide favors fretted same-string connections without inventing pitches", () => {
+  const source=[note(64,0,.18),{...note(65,.18,.17),technique:"slide"},note(67,.35,.15)];
+  const result=assign(source,{role:"melody"});
+  assert(result.notes.length===3,"All original pitches remain");
+  assert(result.notes[0].string===result.notes[1].string,"Slide connection uses the same string");
+  assert(result.notes[0].fret>0&&result.notes[1].fret>0,"Slide is not fabricated from an open string");
+  assert(result.notes.map(n=>n.midi).join(",")==="64,65,67","Technique never changes pitch");
+  assert(result.diagnostics.techniqueConflicts===0,"Supported physical connection");
+  playable(result);
+});
+Deno.test("roles remain soft and preserve manual fingerings and alternate tuning/capo", () => {
+  const source=[{...note(64,0,.2),edited:true,string:3,fret:9},note(67,.22,.2)];
+  for(const role of ["auto","melody","accompaniment"]){
+    const result=assign(source,{role});
+    assert(result.notes[0].string===3&&result.notes[0].fret===9,"Manual fingering has priority");
+    assert(result.notes.length===2,"No role filtering of pitches");
+    playable(result);
+    const alternate=assign([note(63),note(66,.3,.2)],{role,tuning:"half_down",capo:1});
+    assert(alternate.notes.length===2,"Real alternate tuning and capo");
+    playable(alternate);
+  }
+});
 Deno.test("bass four/five strings and Drop D use actual low pitches without guitar capo", () => {
   const four = assign([note(28), note(33), note(38), note(43)], { instrument: "bass", tuning: "bass_standard", capo: 7 });
   assert(four.tuning.join(",") === "28,33,38,43" && four.capo === 0, "Bass is octave-correct and independent of guitar capo");

@@ -21,7 +21,7 @@ const TabStudio = (() => {
     rhythm = {},
     windowStart = -1,
     activeRow = -1;
-  let scrollFrame = 0, taskTimer = null, manualScrollAt = 0, session = 0, editSerial = 0, verificationSerial = 0;
+  let scrollFrame = 0, taskTimer = null, manualScrollAt = 0, session = 0, editSerial = 0, verificationSerial = 0, assigning = 0;
   const copy = (list) => list.map((note) => ({ ...note }));
   const context = () => ({
     instrument: instrument(),
@@ -30,6 +30,7 @@ const TabStudio = (() => {
     voice: $("#tabVoice").value,
     position: $("#tabPosition").value,
     density: state.tabDensity,
+    role: $("#tabRole").value,
     source_engine: state.tabEngine || "basic_pitch",
     fingering_mode: $("#tabFingering").value,
   });
@@ -257,7 +258,7 @@ const TabStudio = (() => {
     const saved = localStorage.getItem(tabStorageKey("tuning", id));
     state.tabTuning = [...select.options].some((option) => option.value === saved) ? saved : isBass() ? "bass_standard" : "standard";
     select.value = state.tabTuning;
-    for (const [control, setting] of [["tabVoice", "voice"], ["tabPosition", "position"]]) {
+    for (const [control, setting] of [["tabVoice", "voice"], ["tabPosition", "position"],["tabRole","role"]]) {
       const node = $("#" + control), value = localStorage.getItem(tabStorageKey(setting, id));
       node.value = [...node.options].some((option) => option.value === value) ? value : node.options[0].value;
     }
@@ -291,6 +292,7 @@ const TabStudio = (() => {
       if (!isBass()) $("#capoSelect").value = String(previous.capo);
       $("#tabVoice").value = previous.voice;
       $("#tabPosition").value = previous.position;
+      $("#tabRole").value = previous.role || "auto";
       $("#tabFingering").value = previous.fingering_mode || "model";
       $$("[data-tab-density]").forEach((button) =>
         button.classList.toggle("active", button.dataset.tabDensity === previous.density)
@@ -299,6 +301,8 @@ const TabStudio = (() => {
     return false;
   }
   function reset(id) {
+    assigning = 0;
+    $("#continuousTab").removeAttribute("aria-busy");
     session++;
     clearTimeout(taskTimer);
     taskTimer = null;
@@ -382,6 +386,7 @@ const TabStudio = (() => {
     $("#tabTuning").value = state.tabTuning;
     $("#tabVoice").value = document.voice;
     $("#tabPosition").value = document.position;
+    $("#tabRole").value = document.role || "auto";
     $("#tabFingering").value = document.fingering_mode || "model";
     updateInstrumentControls();
     $$("[data-tab-density]").forEach((button) =>
@@ -522,9 +527,17 @@ const TabStudio = (() => {
       toast("設定已變更，改用自動配置；已儲存版本仍保留");
     }
     const generation = state.tabRender = (state.tabRender || 0) + 1, id = jobId, expectedKey = key();
+    const expectedEdit = editSerial;
+    assigning = generation;
+    $("#continuousTab").setAttribute("aria-busy","true");
+    controls();
     $("#tabNoteSummary").textContent = "配置指法…";
-    const result = await assignTabNotes(state.tabNotes || []);
-    if (!result || generation !== state.tabRender || jobId !== id || key() !== expectedKey) return;
+    let result;
+    try { result = await assignTabNotes(state.tabNotes || []); }
+    finally {
+      if(assigning===generation){assigning=0;$("#continuousTab").removeAttribute("aria-busy");controls();}
+    }
+    if (!result || generation !== state.tabRender || jobId !== id || key() !== expectedKey || editSerial !== expectedEdit) return;
     notes = copy(result.notes).filter((n) => n.start < state.current.duration).map((n) => ({
       ...n,
       end: Math.min(n.end, state.current.duration),
@@ -637,7 +650,7 @@ const TabStudio = (() => {
           note.suspicious ? "suspect " : ""
         }${note.edited ? "edited" : ""}" style="left:${
           Math.min(98, Math.max(2, position(note.start)))
-        }%" title="${note.start.toFixed(2)}s · 第 ${tuning().length - string} 弦 · ${note.fret} 格">${note.fret}</button>`
+        }%" title="${note.start.toFixed(2)}s · 第 ${tuning().length - string} 弦 · ${note.fret} 格${({slide:' · 人工確認滑音',hammer_on:' · 人工確認擊弦',pull_off:' · 人工確認勾弦'}[note.technique]) || ''}">${({slide:'s',hammer_on:'h',pull_off:'p'}[note.technique]) || ''}${note.fret}</button>`
       ).join("");
       return `<div class="tab-system-row"><b>${
         NOTE_NAMES[tuning()[string] % 12]
@@ -687,11 +700,11 @@ const TabStudio = (() => {
     }
   }
   function controls() {
-    $("#tabSave").disabled = !dirty || saving;
-    $("#tabUndo").disabled = !undo.length;
+    $("#tabSave").disabled = !dirty || saving || !!assigning;
+    $("#tabUndo").disabled = !undo.length || !!assigning;
     $("#tabOriginal").disabled = state.tabSource !== instrument() && !savedDocument;
     $("#tabOriginal").textContent = !loadedDocument && !dirty && savedDocument ? "我的版本" : "原始譜";
-    $("#tabEditMode").disabled = !notes.length;
+    $("#tabEditMode").disabled = !notes.length || !!assigning;
     $("#tabSaveStatus").textContent = saving ? "儲存中…" : dirty ? "未儲存" : revision ? "已儲存" : "";
   }
   function remember() {
@@ -701,10 +714,13 @@ const TabStudio = (() => {
     loadedDocument = null;
   }
   function openEditor(note) {
+    if(assigning)return toast("正在配置指法，請稍候");
     editIndex = note.index;
     $("#tabEditString").value = String(note.string);
     $("#tabEditFret").max = String(24 - capo());
     $("#tabEditFret").value = String(note.fret);
+    $("#tabEditTechnique").value = note.technique || "none";
+    $("#tabEditTechnique").disabled = isBass();
     $("#tabEditInfo").textContent = `${note.start.toFixed(2)} 秒 · 改弦時會優先保留音高`;
     pitchLabel();
     $("#tabNoteDialog").showModal();
@@ -736,6 +752,7 @@ const TabStudio = (() => {
     note.midi = tuning()[string] + capo() + fret;
     note.edited = true;
     note.suspicious = false;
+    note.technique = isBass() ? "none" : $("#tabEditTechnique").value;
     dirty = true;
     $("#tabNoteDialog").close();
     rebuild();

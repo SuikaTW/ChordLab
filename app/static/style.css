@@ -363,6 +363,9 @@ svg.chord-chart { display: block; width: min(100%, 232px); height: auto; color: 
 .practice-controls button, .practice-controls select { min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .practice-controls button[aria-pressed="true"] { border-color: var(--ink); background: var(--acid); }
 .practice-controls button:disabled { opacity: .5; cursor: default; }
+.practice-controls input[type="number"] { width: 92px; min-height: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; }
+#localChordReviewCandidates { max-height: 320px; overflow-y: auto; }
+#localChordReviewCandidates > div { padding: 6px 0; }
 .voicing-flow-option { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 12px; color: var(--muted); }
 #verificationPlayer { display: block; width: 100%; margin: 8px 0; }
 #verificationPreviewPanel small { display: block; color: var(--muted); line-height: 1.6; }

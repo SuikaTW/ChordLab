@@ -247,6 +247,22 @@ Run `bin/deno test tests/tab-engine.test.js` and `.venv/bin/python -m unittest d
 - Key estimation is inferred from the duration-weighted chord track and should be treated as a starting point when a song modulates or the chord recognition is sparse.
 - Continuous TAB maps detected pitches onto standard-tuned guitar strings with a continuity heuristic. It is a playable estimate, not a claim about the original performer's exact string/fret choices or techniques.
 
+## Acoustic change audit and local chord review
+
+Recommendation revision 6 adds bounded acoustic change proposals without requiring another model to nominate a boundary. Silence, volume-only changes and beat grids cannot force chord changes. Acoustic-only chord candidates need local note support for every chord tone, added fundamentals and a strict two-window fit improvement; they are not another independent vote. Root, candidate bass, third and seventh evidence is stored separately, not presented as calibrated probabilities. All cross-verification pitch corrections now also require two independent model families: expanded evaluation exposed false octave-down corrections from spectral evidence alone. Inversions and omitted/extended tones remain ambiguous; this is not neural-network training.
+
+Fixed-raw-output evaluation on 2026-10-08 is recorded in benchmarks/evaluation-20261008.json: 12 real acoustic clips across five genres. Recommended pitch/onset micro-F1 moves from 0.8994 to 0.8997; including offsets, from 0.7351 to 0.7392. Gains are small, regression-split onset F1 decreases (0.9368 to 0.9360), and false additions remain. Chord metrics are unchanged, so improved chord accuracy is not demonstrated. Two of eight prepared stress derivatives were evaluated; they are not real electric/band recordings or a blind test.
+
+The collapsed **Recheck a short passage** panel accepts 0.5–90 seconds and offers selected-segment / next-doubt shortcuts. Dense 125 ms scanning reuses existing evidence in the durable shared queue, with existing ownership, retry, daily and concurrency limits. Preview and loop audition precede explicit confirmation into a separate local_review method. Original methods, key and private TAB remain intact. Source fingerprints and independent outside/manual/coverage validation reject stale or destructive proposals; an existing manual local version cannot be overwritten from another method. Unapplied proposals are hidden from other public viewers and exports.
+
+TAB adds Auto / Connected melody / Stable accompaniment role costs, without filtering pitches or overriding valid manual fingerings. Confirmed slide/hammer-on/pull-off annotations persist privately and display s/h/p; same-string/direction constraints guide allocation and flag conflicts. These are manually confirmed techniques, not an automatic technique classifier or proof of the original fingering.
+
+## Diverse and controlled-stress references
+
+The original six-clip pilot remains immutable. A new --diverse --count 12 selection balances GuitarSet's BN/Funk/Jazz/Rock/SS, comp/solo and six performers, with performer-disjoint development/regression groups. Metrics separate exact chord labels, roots, base qualities and 250 ms-tolerant change boundaries; unsupported rich Harte exact labels are reported rather than silently treated as simpler chords.
+
+tools/corpus_stress.py produces deterministic soft-clipped acoustic and procedural-drum-mix cases without pitch/timing changes. These are robustness derivatives, NOT real electric guitar or band recordings, and not independent reference samples. [Source registry](benchmarks/reference_sources.json) records provenance and licensing: EGDB/EGDB-PG remains unimported pending clear data rights and a suitable small aligned subset. GuitarSet overlap with existing training data remains possible/known, so neither this expansion nor synthetic robustness establishes blind real-song accuracy. Live recheck tests generate proposals only and never apply them.
+
 ## Attribution
 
 - Basic Pitch: Spotify AB, Apache-2.0.

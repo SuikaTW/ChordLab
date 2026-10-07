@@ -75,7 +75,26 @@ def parse_annotations(payload):
             "chord_annotations": chords, "tuning": "standard", "capo": 0}
 
 
-def build(root, count=6):
+def select_diverse(available,count):
+    """Round-robin genre/style, then performers; never inspect predictions."""
+    def category(name):
+        token=name.split('_')[1].split('-')[0]
+        genre=token.rstrip('0123456789')
+        return genre,name.rsplit('_',1)[-1]
+    buckets={}
+    for name in available:buckets.setdefault(category(name),[]).append(name)
+    selected=[];used_performers={}
+    while len(selected)<min(count,len(available)):
+        for key in sorted(buckets):
+            choices=[name for name in buckets[key] if name not in selected]
+            if not choices:continue
+            chosen=min(choices,key=lambda name:(used_performers.get(name[:2],0),name))
+            selected.append(chosen);used_performers[chosen[:2]]=used_performers.get(chosen[:2],0)+1
+            if len(selected)==count:break
+    return selected
+
+
+def build(root, count=6, diverse=False):
     if not 2 <= count <= 60:
         raise ValueError("Corpus selection limit is 2–60")
     archives = root / "archives"
@@ -96,6 +115,7 @@ def build(root, count=6):
                 if candidates:
                     selected.append(candidates[0])
         selected.extend(name for name in available if name not in selected)
+        if diverse:selected=select_diverse(available,count)
         if count == 2 and selected:
             other = next((name for name in selected if name[:2] != selected[0][:2]),None)
             selected = [selected[0],other] if other else selected[:2]
@@ -104,7 +124,7 @@ def build(root, count=6):
         development = set(performers[:max(1,len(performers)//2)])
         for index, name in enumerate(selected):
             directory = clips/name; directory.mkdir(exist_ok=True)
-            for archive, member, filename, limit in ((labels,label_index[name],"source.jams",2_000_000), (audio,audio_index[name],"audio.wav",50_000_000)):
+            for archive, member, filename, limit in ((labels,label_index[name],"source.jams",12_000_000), (audio,audio_index[name],"audio.wav",50_000_000)):
                 if archive.getinfo(member).file_size > limit:
                     raise ValueError("Selected corpus member exceeds limit")
                 path = directory/filename
@@ -119,6 +139,7 @@ def build(root, count=6):
                 raise ValueError("Immutable reference already differs")
             if not target.exists(): target.write_text(rendered)
             records.append(dict(id=name, performer=name[:2], style=name.rsplit("_",1)[-1],
+                genre=name.split('_')[1].split('-')[0].rstrip('0123456789'),source_condition='real_acoustic_guitar',
                 split="development" if name[:2] in development else "regression",
                 audio=str((directory/"audio.wav").relative_to(root)), reference=str(target.relative_to(root)),
                 audio_sha256=checksum(directory/"audio.wav"), reference_sha256=checksum(target),
@@ -126,7 +147,11 @@ def build(root, count=6):
     manifest = dict(schema=1, source=SOURCE, version="1.1.0", license="CC-BY-4.0",
         attribution="Qingyang Xi, Rachel M. Bittner, Johan Pauwels, Xuzhou Ye, Juan P. Bello; GuitarSet, ISMIR 2018",
         reference_policy="published_annotations_only_never_predictions", model_training_overlap="possible_or_known_not_independent_blind_test",
+        selection='genre_style_performer_round_robin' if diverse else 'legacy_pilot',
         excluded_known_annotation_errors=sorted(EXCLUDED), records=records)
+    previous=root/'manifest.json'
+    if previous.is_file() and json.loads(previous.read_text())!=manifest:
+        raise ValueError('Existing corpus manifest is immutable; use a new corpus directory')
     (root/"manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+"\n")
     print("Corpus records", len(records), flush=True)
     return manifest
@@ -137,10 +162,11 @@ def main():
     parser.add_argument("root", type=Path)
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--count", type=int, default=6)
+    parser.add_argument('--diverse',action='store_true',help='Balance genre, comp/solo and performers; use a new directory')
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
     if args.download: download(args.root/"archives")
-    build(args.root, args.count)
+    build(args.root, args.count,args.diverse)
 
 
 if __name__ == "__main__": main()

@@ -56,4 +56,34 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(len(corpus.EXCLUDED),3)
         self.assertTrue(corpus.SOURCE.startswith("https://zenodo.org/"))
 
+    def test_diverse_selection_covers_genres_styles_performers_without_predictions(self):
+        names=[f"{i:02}_{genre}1-120-C_{style}" for i in range(6)
+            for genre in ('BN','Funk','Jazz','Rock','SS') for style in ('comp','solo')]
+        selected=corpus.select_diverse(sorted(names),12)
+        self.assertEqual(len(set(selected)),12)
+        self.assertEqual({n.split('_')[1].split('1')[0] for n in selected},{'BN','Funk','Jazz','Rock','SS'})
+        self.assertEqual({n[:2] for n in selected},{f'{i:02}' for i in range(6)})
+        self.assertEqual({n.rsplit('_',1)[-1] for n in selected},{'comp','solo'})
+
+    def test_chord_metrics_separate_root_quality_and_boundary_omissions(self):
+        reference=[dict(start=0,end=2,chord='C'),dict(start=2,end=4,chord='Am')]
+        wrong=[dict(start=0,end=4,chord='C')]
+        metrics=weighted_chords(reference,wrong,4)
+        self.assertEqual(metrics['boundary_reference_count'],1)
+        self.assertEqual(metrics['boundary_predicted_count'],0)
+        self.assertEqual(metrics['boundary_f1'],0)
+        quality=[dict(start=0,end=2.1,chord='Cmaj7'),dict(start=2.1,end=4,chord='Am7')]
+        metrics=weighted_chords(reference,quality,4)
+        self.assertEqual(metrics['boundary_f1'],1)
+        self.assertGreater(metrics['root_duration_agreement'],.9)
+        self.assertEqual(metrics['exact_chord_duration_agreement'],0)
+
+    def test_rich_harte_annotations_keep_root_metrics_without_faking_exact_match(self):
+        metrics=weighted_chords([dict(start=0,end=2,chord='D#:sus2(7)/1')],
+            [dict(start=0,end=2,chord='Ebsus2')],2)
+        self.assertEqual(metrics['root_duration_agreement'],1)
+        self.assertEqual(metrics['family_duration_agreement'],1)
+        self.assertEqual(metrics['exact_chord_duration_agreement'],0)
+        self.assertEqual(metrics['unsupported_exact_reference_seconds'],2)
+
 if __name__=="__main__": unittest.main()

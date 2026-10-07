@@ -43,6 +43,88 @@ class GuitarEngineTests(unittest.TestCase):
     def post(self, engine):
         return self.client.post(f"/api/jobs/song/guitar-analysis?engine={engine}", headers={"Origin": "http://testserver"})
 
+    def local_post(self,**extra):
+        return self.client.post('/api/jobs/song/chord-review',headers={'Origin':'http://testserver'},
+            json={'start':2,'end':8,'method':'chordino',**extra})
+
+    def test_local_chord_review_range_queue_conflict_permissions_and_quota(self):
+        self.assertEqual(self.local_post(start=8,end=2).status_code,400)
+        self.assertEqual(self.local_post(end=100).status_code,400)
+        self.assertEqual(self.local_post(method='../bad').status_code,400)
+        self.assertEqual(self.local_post().status_code,202)
+        calls=main.executor.submit.call_count
+        self.assertEqual(self.local_post().status_code,202)
+        self.assertEqual(main.executor.submit.call_count,calls)
+        self.assertEqual(self.local_post(start=3).status_code,409)
+        with main.db() as c:
+            task=c.execute('SELECT engine,parameters FROM guitar_tasks').fetchone()
+            self.assertEqual(task['engine'],'chord_review')
+            self.assertEqual(json.loads(task['parameters'])['start'],2)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM guitar_submissions').fetchone()[0],1)
+            c.execute("UPDATE guitar_tasks SET status='done',attempts=3")
+        with patch.object(main,'DAILY_JOB_LIMIT',1):
+            self.assertEqual(self.local_post().status_code,429)
+        self.client.cookies.set(main.COOKIE,main.sign_session('bob@example.com','google',int(time.time())+600))
+        self.assertEqual(self.local_post().status_code,404)
+        self.assertEqual(self.client.get('/api/jobs/song/chord-review').status_code,404)
+
+    def test_local_chord_review_proposal_does_not_apply_without_confirmation(self):
+        self.local_post()
+        proposal=[dict(start=0,end=2,chord='C'),dict(start=2,end=8,chord='Am'),dict(start=8,end=10,chord='C')]
+        def worker(command,**kwargs):
+            Path(command[4]).write_text(json.dumps({'chords':proposal,'summary':{'version':3,'changed_segments':1}}))
+        with patch.object(main,'run_command',side_effect=worker):main.process_guitar_task('song')
+        info=self.client.get('/api/jobs/song/chord-review').json()
+        self.assertEqual(info['status'],'done')
+        self.assertEqual(info['chords'],proposal)
+        with main.db() as c:
+            result=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
+        self.assertEqual(result['methods'],self.baseline['methods'])
+        response=self.client.post('/api/jobs/song/chord-review/apply',headers={'Origin':'http://testserver'})
+        self.assertEqual(response.status_code,200,response.text)
+        with main.db() as c:result=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
+        self.assertEqual(result['methods']['chordino'],self.baseline['methods']['chordino'])
+        self.assertEqual(result['methods']['local_review'],proposal)
+        self.assertEqual(result['active_method'],'local_review')
+        self.assertEqual(self.client.post('/api/jobs/song/chord-review/apply',headers={'Origin':'http://testserver'}).status_code,409)
+        self.assertIn('[Am]',self.client.get('/api/jobs/song/export/chordpro?method=local_review').text)
+        self.assertFalse(list(self.directory.glob('.local-chord-review-*')))
+
+    def test_local_chord_review_rejects_stale_apply_and_preserves_manual_chords(self):
+        self.local_post()
+        manual=[dict(start=0,end=10,chord='C')]
+        def worker(command,**kwargs):
+            Path(command[4]).write_text(json.dumps({'chords':manual,'summary':{'version':3,'changed_segments':0}}))
+        with patch.object(main,'run_command',side_effect=worker):main.process_guitar_task('song')
+        with main.db() as c:
+            result=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
+            result['methods']['chordino'][0]['manual']=True
+            c.execute('UPDATE jobs SET result=?',(json.dumps(result),))
+        self.assertEqual(self.client.get('/api/jobs/song/chord-review').json()['status'],'stale')
+        self.assertEqual(self.client.post('/api/jobs/song/chord-review/apply',headers={'Origin':'http://testserver'}).status_code,409)
+
+    def test_local_proposal_cannot_overwrite_manual_work_in_another_local_version(self):
+        self.local_post()
+        def worker(command,**kwargs):
+            Path(command[4]).write_text(json.dumps({'chords':[dict(start=0,end=10,chord='C')],'summary':{'version':3}}))
+        with patch.object(main,'run_command',side_effect=worker):main.process_guitar_task('song')
+        with main.db() as c:
+            result=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
+            result['methods']['local_review']=[dict(start=0,end=10,chord='Am',manual=True)]
+            c.execute('UPDATE jobs SET result=?',(json.dumps(result),))
+        self.assertEqual(self.client.post('/api/jobs/song/chord-review/apply',headers={'Origin':'http://testserver'}).status_code,409)
+        self.client.cookies.set(main.COOKIE,main.sign_session('bob@example.com','google',int(time.time())+600))
+        self.assertNotIn('local_chord_review',self.client.get('/api/jobs/song').json()['result'])
+        self.assertNotIn('local_chord_review',self.client.get('/api/public/jobs/song').json()['result'])
+        self.assertNotIn('local_chord_review',self.client.get('/api/jobs/song/export/json').json())
+
+    def test_raw_chord_manual_flags_survive_subsequent_saves(self):
+        headers={'Origin':'http://testserver'}
+        self.client.put('/api/jobs/song/chords',headers=headers,json={'method':'chordino','chords':[dict(start=0,end=10,chord='Am')]})
+        self.client.put('/api/jobs/song/chords',headers=headers,json={'method':'chordino','chords':[dict(start=0,end=10,chord='Am')]})
+        with main.db() as c:result=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
+        self.assertTrue(result['methods']['chordino'][0]['manual'])
+
     def test_harmony_source_uses_real_separated_path_and_fingerprint(self):
         self.assertEqual(harmony_audio(self.directory),self.directory/'audio.wav')
         (self.directory/'harmony.wav').write_bytes(b'legacy')

@@ -1,0 +1,373 @@
+{
+  "date": "2026-10-08",
+  "recommendation_revision": 6,
+  "limits": [
+    "GuitarSet may overlap existing model training; not a blind test or new training.",
+    "Stress derivatives are not real electric guitar or band recordings; only two of eight prepared cases evaluated.",
+    "Overall onset improvement is small; regression-split onset F1 falls 0.9368 to 0.9360, including a false added note.",
+    "Chord scores unchanged in the real acoustic corpus; no measured chord-accuracy improvement demonstrated."
+  ],
+  "real_acoustic_12": {
+    "schema": 1,
+    "pipeline_sha256": "9f878163a8b636d826b02f67296e133ef5ee86661c9fe94c0fd846e31b351ba6",
+    "evaluation_sha256": "f15536f5cc641697339ace74a9ee578bb70d3110117eeb9872c53e3a7cbd7071",
+    "manifest_sha256": "b544fc48f177ed9178db36c3ed62783c8f12d8f24a188f244c18d19edd423942",
+    "selected_clips": 12,
+    "evaluated_clips": 12,
+    "complete_selection": true,
+    "genres": [
+      "BN",
+      "Funk",
+      "Jazz",
+      "Rock",
+      "SS"
+    ],
+    "condition_policy": "derived_cases_are_not_real_electric_or_band_and_not_independent_samples",
+    "model_training_overlap": "possible_or_known_not_independent_blind_test",
+    "metrics_policy": "separate_development_regression_genre_and_source_condition_no_training",
+    "groups": [
+      {
+        "engine": "cross_verified",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "real_acoustic_guitar",
+        "clips": 6,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 1152,
+            "reference_notes": 1277,
+            "predicted_notes": 1338,
+            "micro_f1": 0.8811
+          },
+          "pitch_onset_offset": {
+            "matched": 917,
+            "reference_notes": 1277,
+            "predicted_notes": 1338,
+            "micro_f1": 0.7013
+          },
+          "displayed_tab": {
+            "micro_f1": 0.888,
+            "actual_fingering_agreement": 0.9052
+          }
+        }
+      },
+      {
+        "engine": "cross_verified",
+        "split": "regression",
+        "genre": "all",
+        "source_condition": "real_acoustic_guitar",
+        "clips": 6,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 600,
+            "reference_notes": 642,
+            "predicted_notes": 639,
+            "micro_f1": 0.9368
+          },
+          "pitch_onset_offset": {
+            "matched": 514,
+            "reference_notes": 642,
+            "predicted_notes": 639,
+            "micro_f1": 0.8025
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9399,
+            "actual_fingering_agreement": 0.9206
+          }
+        }
+      },
+      {
+        "engine": "event_verified",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "real_acoustic_guitar",
+        "clips": 6,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 1154,
+            "reference_notes": 1277,
+            "predicted_notes": 1340,
+            "micro_f1": 0.8819
+          },
+          "pitch_onset_offset": {
+            "matched": 923,
+            "reference_notes": 1277,
+            "predicted_notes": 1340,
+            "micro_f1": 0.7054
+          },
+          "displayed_tab": {
+            "micro_f1": 0.8888,
+            "actual_fingering_agreement": 0.9068
+          }
+        }
+      },
+      {
+        "engine": "event_verified",
+        "split": "regression",
+        "genre": "all",
+        "source_condition": "real_acoustic_guitar",
+        "clips": 6,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 600,
+            "reference_notes": 642,
+            "predicted_notes": 640,
+            "micro_f1": 0.936
+          },
+          "pitch_onset_offset": {
+            "matched": 518,
+            "reference_notes": 642,
+            "predicted_notes": 640,
+            "micro_f1": 0.8081
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9392,
+            "actual_fingering_agreement": 0.9206
+          }
+        }
+      },
+      {
+        "engine": "hybrid",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "real_acoustic_guitar",
+        "clips": 6,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 1152,
+            "reference_notes": 1277,
+            "predicted_notes": 1338,
+            "micro_f1": 0.8811
+          },
+          "pitch_onset_offset": {
+            "matched": 918,
+            "reference_notes": 1277,
+            "predicted_notes": 1338,
+            "micro_f1": 0.7021
+          },
+          "displayed_tab": {
+            "micro_f1": 0.8872,
+            "actual_fingering_agreement": 0.9045
+          }
+        }
+      },
+      {
+        "engine": "hybrid",
+        "split": "regression",
+        "genre": "all",
+        "source_condition": "real_acoustic_guitar",
+        "clips": 6,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 600,
+            "reference_notes": 642,
+            "predicted_notes": 639,
+            "micro_f1": 0.9368
+          },
+          "pitch_onset_offset": {
+            "matched": 514,
+            "reference_notes": 642,
+            "predicted_notes": 639,
+            "micro_f1": 0.8025
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9399,
+            "actual_fingering_agreement": 0.9206
+          }
+        }
+      }
+    ],
+    "chord_metrics_first_annotation_weighted": {
+      "chordino": {
+        "exact_chord_duration_agreement": 0.3716,
+        "root_duration_agreement": 0.6807,
+        "family_duration_agreement": 0.3797
+      },
+      "event_verified": {
+        "exact_chord_duration_agreement": 0.3716,
+        "root_duration_agreement": 0.6807,
+        "family_duration_agreement": 0.3797
+      }
+    }
+  },
+  "controlled_stress_2_of_8": {
+    "schema": 1,
+    "pipeline_sha256": "9f878163a8b636d826b02f67296e133ef5ee86661c9fe94c0fd846e31b351ba6",
+    "evaluation_sha256": "f15536f5cc641697339ace74a9ee578bb70d3110117eeb9872c53e3a7cbd7071",
+    "manifest_sha256": "79c091583a69629fa25aac4c39e4088694b3cc5e9f510e81e841579cb4ab3f62",
+    "selected_clips": 8,
+    "evaluated_clips": 2,
+    "complete_selection": false,
+    "genres": [
+      "BN",
+      "Funk"
+    ],
+    "condition_policy": "derived_cases_are_not_real_electric_or_band_and_not_independent_samples",
+    "model_training_overlap": "possible_or_known_not_independent_blind_test",
+    "metrics_policy": "separate_development_regression_genre_and_source_condition_no_training",
+    "groups": [
+      {
+        "engine": "cross_verified",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "effect_rendered",
+        "clips": 1,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 122,
+            "reference_notes": 133,
+            "predicted_notes": 138,
+            "micro_f1": 0.9004
+          },
+          "pitch_onset_offset": {
+            "matched": 84,
+            "reference_notes": 133,
+            "predicted_notes": 138,
+            "micro_f1": 0.6199
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9254,
+            "actual_fingering_agreement": 0.9323
+          }
+        }
+      },
+      {
+        "engine": "cross_verified",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "synthetic_drum_mix",
+        "clips": 1,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 118,
+            "reference_notes": 133,
+            "predicted_notes": 131,
+            "micro_f1": 0.8939
+          },
+          "pitch_onset_offset": {
+            "matched": 89,
+            "reference_notes": 133,
+            "predicted_notes": 131,
+            "micro_f1": 0.6742
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9091,
+            "actual_fingering_agreement": 0.9023
+          }
+        }
+      },
+      {
+        "engine": "event_verified",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "effect_rendered",
+        "clips": 1,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 122,
+            "reference_notes": 133,
+            "predicted_notes": 138,
+            "micro_f1": 0.9004
+          },
+          "pitch_onset_offset": {
+            "matched": 87,
+            "reference_notes": 133,
+            "predicted_notes": 138,
+            "micro_f1": 0.6421
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9254,
+            "actual_fingering_agreement": 0.9323
+          }
+        }
+      },
+      {
+        "engine": "event_verified",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "synthetic_drum_mix",
+        "clips": 1,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 118,
+            "reference_notes": 133,
+            "predicted_notes": 131,
+            "micro_f1": 0.8939
+          },
+          "pitch_onset_offset": {
+            "matched": 92,
+            "reference_notes": 133,
+            "predicted_notes": 131,
+            "micro_f1": 0.697
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9091,
+            "actual_fingering_agreement": 0.9023
+          }
+        }
+      },
+      {
+        "engine": "hybrid",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "effect_rendered",
+        "clips": 1,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 122,
+            "reference_notes": 133,
+            "predicted_notes": 138,
+            "micro_f1": 0.9004
+          },
+          "pitch_onset_offset": {
+            "matched": 84,
+            "reference_notes": 133,
+            "predicted_notes": 138,
+            "micro_f1": 0.6199
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9254,
+            "actual_fingering_agreement": 0.9323
+          }
+        }
+      },
+      {
+        "engine": "hybrid",
+        "split": "development",
+        "genre": "all",
+        "source_condition": "synthetic_drum_mix",
+        "clips": 1,
+        "metrics": {
+          "pitch_onset": {
+            "matched": 118,
+            "reference_notes": 133,
+            "predicted_notes": 131,
+            "micro_f1": 0.8939
+          },
+          "pitch_onset_offset": {
+            "matched": 89,
+            "reference_notes": 133,
+            "predicted_notes": 131,
+            "micro_f1": 0.6742
+          },
+          "displayed_tab": {
+            "micro_f1": 0.9091,
+            "actual_fingering_agreement": 0.9023
+          }
+        }
+      }
+    ],
+    "chord_metrics_first_annotation_weighted": {
+      "chordino": {
+        "exact_chord_duration_agreement": 0.0615,
+        "root_duration_agreement": 0.6567,
+        "family_duration_agreement": 0.0615
+      },
+      "event_verified": {
+        "exact_chord_duration_agreement": 0.0615,
+        "root_duration_agreement": 0.6567,
+        "family_duration_agreement": 0.0615
+      }
+    }
+  }
+}

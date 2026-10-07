@@ -1,0 +1,27 @@
+{
+  "policy": "Only provenance-reviewed licensed audio and aligned annotations; never predicted labels",
+  "sources": [
+    {
+      "name": "GuitarSet v1.1.0",
+      "url": "https://zenodo.org/records/3371780",
+      "license": "CC-BY-4.0",
+      "status": "checksum_pinned_diverse_12_clip_corpus",
+      "coverage": "Real acoustic guitar; BN/Funk/Jazz/Rock/SS, comp/solo, six performers",
+      "caveat": "Possible or known existing-model training overlap; not a blind test"
+    },
+    {
+      "name": "Controlled stress derivatives",
+      "license": "CC-BY-4.0 source retained",
+      "status": "eight_time_and_pitch_preserving_cases",
+      "coverage": "Soft-clipped acoustic timbre and procedural drum mix",
+      "caveat": "Not real electric guitar or band recordings; not a new independent reference"
+    },
+    {
+      "name": "EGDB / EGDB-PG",
+      "urls": ["https://ss12f32v.github.io/Guitar-Transcription/", "https://zenodo.org/records/19789500"],
+      "status": "not_downloaded_pending_clear_data_license_and_small_aligned_subset",
+      "coverage": "Electric/amplifier-rendered guitar",
+      "caveat": "Public access is not permission to redistribute; the PG FLAC bundle is approximately 135.4 GB"
+    }
+  ]
+}

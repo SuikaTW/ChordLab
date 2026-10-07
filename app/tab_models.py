@@ -17,6 +17,7 @@ class TabNote(BaseModel):
     fret: int = Field(ge=0, le=24)
     edited: bool = False
     suspicious: bool = False
+    technique: Literal["none", "slide", "hammer_on", "pull_off"] = "none"
 
 
 class TabRhythm(BaseModel):
@@ -35,6 +36,7 @@ class TabDocument(BaseModel):
     voice: Literal["all", "high", "low"] = "all"
     position: Literal["auto", "open", "middle", "high"] = "auto"
     density: Literal["clean", "full"] = "clean"
+    role: Literal["auto", "melody", "accompaniment"] = "auto"
     source_engine: Literal["basic_pitch", "gaps", "tabcnn", "hybrid", "verified", "cross_verified", "event_verified"] = "basic_pitch"
     fingering_mode: Literal["model", "playable"] = "model"
     rhythm: TabRhythm = Field(default_factory=TabRhythm)

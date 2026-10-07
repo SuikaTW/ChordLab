@@ -101,6 +101,7 @@ async function init() {
 }
 
 function bindEvents() {
+  LocalChordReview.bind();
   TabStudio.bind();
   $("#analysisPreset").addEventListener("change", applyAnalysisPreset);
   applyAnalysisPreset();
@@ -180,7 +181,7 @@ function bindEvents() {
     if (state.current) localStorage.setItem(tabStorageKey("tuning"), state.tabTuning);
     renderContinuousTab();
   });
-  for (const [id, key] of [["tabVoice", "voice"], ["tabPosition", "position"]]) {
+  for (const [id, key] of [["tabVoice", "voice"], ["tabPosition", "position"],["tabRole","role"]]) {
     $("#" + id).addEventListener("change", (event) => {
       if (!TabStudio.reconfigure()) {
         return;
@@ -485,11 +486,12 @@ async function openJob(id, isPublic = false, reveal = false) {
     if (!isPublic) localStorage.setItem(lastJobKey(), id);
     const preferredMethod = job.result?.active_method || "chordino";
     state.method = job.result?.event_verified_chord_review?.version >= 2 && job.result?.methods?.event_verified?.length &&
-      !job.result?.methods?.[preferredMethod]?.some(segment => segment.manual) ? "event_verified" : preferredMethod;
+      preferredMethod !== "local_review" && !job.result?.methods?.[preferredMethod]?.some(segment => segment.manual) ? "event_verified" : preferredMethod;
     state.track = job.result?.separation?.analysis_stem || "original";
     state.tracks = [state.track];
     state.capo = Math.min(11, Math.max(0, Math.round(Number(localStorage.getItem(`capo:${id}`)) || 0)));
     state.selected = -1;
+    LocalChordReview.open();
     state.resultView = "chords";
     syncCurrentJob();
     renderWorkspace();
@@ -607,6 +609,12 @@ function renderWorkspace() {
       $(".method-switch").append(eventButton);
     }
     eventButton.classList.toggle("hidden", !state.current.result.methods.event_verified?.length);
+    let localButton = $("[data-method='local_review']");
+    if (!localButton) {
+      localButton = document.createElement("button");localButton.dataset.method="local_review";localButton.textContent="局部修正版";
+      localButton.addEventListener("click",()=>switchMethod("local_review"));$(".method-switch").append(localButton);
+    }
+    localButton.classList.toggle("hidden",!state.current.result.methods.local_review?.length);
     $("[data-method='ensemble']").classList.toggle("hidden", !state.current.result.methods.ensemble?.length);
     if (!state.current.result.methods[state.method]?.length) {
       state.method = state.current.result.methods.chordino.length ? "chordino" : "basic_pitch";
@@ -1022,7 +1030,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=9");
+    const worker = new Worker("/static/tab-worker.js?v=10");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
@@ -1059,6 +1067,7 @@ function assignTabNotes(notes) {
         capo: state.tabInstrument === "bass" ? 0 : state.capo,
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
+        role: $("#tabRole").value,
         useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });
@@ -1175,7 +1184,7 @@ function switchMethod(method, announce = true) {
   );
   renderTimeline();
   renderEditor();
-  if (announce) toast(`已切換到${{event_verified:"建議版",cross_verified:"交叉校驗",chord_v2:"和弦 v2（實驗）",ensemble:"雙引擎比對",chordino:"原本辨識"}[method] || "音符推算"}`);
+  if (announce) toast(`已切換到${{local_review:"局部修正版",event_verified:"建議版",cross_verified:"交叉校驗",chord_v2:"和弦 v2（實驗）",ensemble:"雙引擎比對",chordino:"原本辨識"}[method] || "音符推算"}`);
 }
 
 function needsReview(segment) {
@@ -1186,7 +1195,8 @@ function chords() {
 }
 function renderTimeline() {
   const summary = $("#comparisonSummary");
-  summary.classList.toggle("hidden", !["ensemble", "chord_v2", "cross_verified", "event_verified"].includes(state.method));
+  summary.classList.toggle("hidden", !["ensemble", "chord_v2", "cross_verified", "event_verified","local_review"].includes(state.method));
+  if(state.method==="local_review")summary.textContent="局部修正版 · 已確認重查結果，原版與人工段落保留。";
   if (["cross_verified", "event_verified"].includes(state.method)) {
     const info = state.current.result[state.method === "event_verified" ? "event_verified_chord_review" : "cross_chord_review"] || {};
     summary.textContent = `${state.method === "event_verified" ? "建議版" : "交叉校驗"} · ${info.split_baseline_segments ? `細分 ${info.split_baseline_segments} 個長段 · ` : ""}調整 ${info.changed_segments || 0} 段 · ${info.review_segments || 0} 段有候選；原版與 Key 保留，仍需試聽。`;
@@ -1201,7 +1211,7 @@ function renderTimeline() {
   const list = chords(), duration = state.current.duration || 1, timeline = $("#timeline");
   timeline.innerHTML = list.map((segment, index) => {
     const played = playedChord(segment.chord);
-    const review = ["ensemble", "chord_v2", "cross_verified", "event_verified"].includes(state.method) && needsReview(segment);
+    const review = ["ensemble", "chord_v2", "cross_verified", "event_verified","local_review"].includes(state.method) && needsReview(segment);
     return `<button class="chord-block ${
       index === state.selected ? "selected" : ""
     } ${review ? "needs-review" : ""}" ${review ? 'title="這段需要檢查，點選查看候選"' : ""} data-segment="${index}" style="width:${
@@ -1257,7 +1267,7 @@ function renderEditor() {
   renderCandidates(segment, editable);
 }
 function renderCandidates(segment, editable) {
-  const v2 = ["chord_v2", "cross_verified", "event_verified"].includes(state.method);
+  const v2 = ["chord_v2", "cross_verified", "event_verified","local_review"].includes(state.method);
   const box = $("#chordCandidates"), comparison = v2 && segment?.refinement?.uncertain ?
     { candidates: segment.refinement.alternatives } : state.method === "ensemble" ? segment?.comparison : null;
   const jobId = state.current?.id;
@@ -1265,9 +1275,17 @@ function renderCandidates(segment, editable) {
   box.replaceChildren();
   if (!comparison || !needsReview(segment)) return;
   const explanation = document.createElement("p");
-  explanation.textContent = ["cross_verified", "event_verified"].includes(state.method) ? "獨立和弦辨識有不同判斷；原音與吉他音符只作校驗，仍建議試聽確認。" : v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
+  explanation.textContent = ["cross_verified", "event_verified"].includes(state.method) ? "音訊或和弦辨識仍有疑點；以下是候選，不是正確率，建議試聽確認。" : v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
     comparison.status === "detail" ? "根音與和弦家族相同，延伸音或低音不同。" : "BTC 對這一段有不同判斷；目前保留原本結果。";
   box.append(explanation);
+  const evidence=segment.refinement?.components;
+  if(evidence){
+    const detail=document.createElement("small");
+    detail.textContent=[["根音","root"],["候選低音","bass_target"],["三度","third"],["七度","seventh"]]
+      .filter(([,key])=>evidence[key]).map(([name,key])=>name+" "+NOTE_NAMES[evidence[key].pitch_class]+
+        (evidence[key].fundamental_strength>=.08 ? " 可見" : " 待確認")).join(" · ");
+    box.append(detail);
+  }
   for (const candidate of comparison.candidates || []) {
     const row = document.createElement("div"), text = document.createElement("span");
     text.textContent = v2 ? playedChord(candidate.chord) : `BTC ${playedChord(candidate.chord)} · 占此段 ${Math.round(candidate.share * 100)}% 時間`;

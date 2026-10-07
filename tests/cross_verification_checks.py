@@ -47,6 +47,20 @@ class CrossTests(unittest.TestCase):
         context=cross.context(event(52))
         self.assertNotIn(54,context["alternatives"])
 
+    def test_octave_candidate_without_two_independent_nominations_is_advisory_only(self):
+        # A plausible low-octave synthetic spectrum is not enough to override a
+        # high note in the recommended path with no independent model support.
+        low=[event(45)];high=[event(57)]
+        cross=CrossEvidence({'models':{'gaps':{'notes':high}},'methods':{}},1.2,'gaps')
+        result,summary=verify(synthesize(low,1.2),high,cross=cross)
+        self.assertEqual(result[0]['midi'],57)
+        self.assertEqual(summary['changed_notes'],0)
+        self.assertEqual(summary['pitch_nomination_policy'],'two_independent_families_for_every_cross_pitch_change')
+        data={'models':{'gaps':{'notes':high},'basic_pitch':{'notes':low},'tabcnn':{'notes':[event(45,model_string=0,model_fret=5)]}},'methods':{}}
+        result,summary=verify(synthesize(low,1.2),high,cross=CrossEvidence(data,1.2,'gaps'))
+        self.assertEqual(result[0]['midi'],45)
+        self.assertEqual(summary['changed_notes'],1)
+
     def test_agreed_polyphonic_chord_is_not_a_conflict_just_because_it_has_other_notes(self):
         notes=[event(pitch) for pitch in (50,54,57)]
         models={name:{"notes":notes} for name in ("gaps","basic_pitch")}

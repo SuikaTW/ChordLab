@@ -55,14 +55,14 @@ def run():
             assert "原和弦" in page.locator("#selectedChord").inner_text()
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth+1")
             worker=page.evaluate("""() => new Promise((resolve,reject) => {
-              const w=new Worker('/static/tab-worker.js?v=9');
+              const w=new Worker('/static/tab-worker.js?v=10');
               w.onmessage=e=>{w.terminate();resolve(e.data)};
               w.onerror=e=>{w.terminate();reject(new Error(e.message))};
               w.postMessage({notes:[{start:0,end:.5,midi:64,velocity:.7}],options:{position:'high'}});
             })""")
             assert worker["result"]["notes"][0]["fret"]==0, "Worker must use the open-string fix, not cached v7"
             phrase=page.evaluate("""() => new Promise((resolve,reject) => {
-              const w=new Worker('/static/tab-worker.js?v=9');
+              const w=new Worker('/static/tab-worker.js?v=10');
               w.onmessage=e=>{w.terminate();resolve(e.data)};
               w.onerror=e=>{w.terminate();reject(new Error(e.message))};
               w.postMessage({notes:[{start:0,end:1.5,midi:64,velocity:.7},{start:.2,end:.38,midi:65,velocity:.7},{start:.4,end:.8,midi:67,velocity:.7}],options:{}});

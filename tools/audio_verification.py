@@ -162,6 +162,11 @@ def verify(samples, notes, profile=None, passes=2, cross=None):
             for midi in dict.fromkeys(candidates):
                 if not 40 <= midi <= 88 or any(midi in pitches for pitches in active):
                     continue
+                # Even an octave/half-step repair needs independent nomination
+                # in the cross/recommended path. Spectral harmonics alone can
+                # prefer a false low octave despite an audible high note.
+                if cross and len(context['support'].get(midi,()))<2:
+                    continue
                 frequency = 440 * 2 ** ((midi-69)/12)
                 if any(spec[np.abs(FREQ-frequency) <= 10].max(initial=0) < spec.max()*.06 for spec in observed):
                     continue
@@ -240,4 +245,5 @@ def verify(samples, notes, profile=None, passes=2, cross=None):
             conflict_notes=sum(context["conflict"] for context in contexts),
             invalid_tab_events=cross.invalid_tab_events,correlated_models_counted_once=True,
             chord_policy="soft_context_never_force_chord_tones", tab_policy="pitch_valid_model_hints_only")
+        summary['pitch_nomination_policy']='two_independent_families_for_every_cross_pitch_change'
     return output, summary
