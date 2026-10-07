@@ -37,11 +37,28 @@
         document.getElementById('downloadsSlot').after(downloads);
       }
     }
+    const tracks = document.getElementById('trackRow'), method = document.querySelector('.method-options');
+    if (tracks && utilityBody) {
+      if (theme === 'studio') {
+        utilityBody.prepend(tracks);
+        if (method) utilityBody.append(method);
+      } else {
+        document.getElementById('trackToolsSlot').after(tracks);
+        if (method) document.querySelector('.method-row').append(method);
+      }
+    }
     const insight = document.querySelector('.analysis-insight'), review = document.getElementById('localChordReviewPanel');
     if (insight && review) {
       const anchor = theme === 'studio' ? document.querySelector('.timeline-wrap') : document.getElementById('chordToolsSlot');
       anchor.after(insight, review);
     }
+    const score = document.getElementById('tabFlowViewport');
+    const options = document.querySelector('.tab-options'), analysis = document.getElementById('tabAnalysisDetails');
+    if (score && options && analysis) {
+      if (theme === 'studio') score.after(options, analysis);
+      else document.querySelector('.tab-view-options').before(analysis, options);
+    }
+    window.dispatchEvent(new CustomEvent('chordlab:appearance', {detail:{theme}}));
   }
   let saved;
   try {

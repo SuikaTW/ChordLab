@@ -4,7 +4,10 @@ const TabStudio = (() => {
   const instrument = () => isBass() ? "bass" : "guitar";
   const capo = () => isBass() ? 0 : state.capo;
   const tuning = () => ChordLabTab.TUNINGS[state.tabTuning].midi;
-  const rowHeight = () => 230 - (6 - tuning().length) * 29;
+  const studio = () => document.documentElement.dataset.theme === 'studio';
+  const rowHeight = () => studio() ? 202 - (6 - tuning().length) * 26 : 230 - (6 - tuning().length) * 29;
+  const rowGap = () => studio() ? 6 : 11;
+  let layoutRowHeight = 230, layoutWidth = 0, resizeFrame = 0;
   const taskPath = (id, engine) => `/api/jobs/${id}/${isBass() ? "bass-analysis" : "guitar-analysis" + (engine === "basic_pitch" ? "" : `?engine=${engine}`)}`;
   let jobId = null,
     notes = [],
@@ -155,6 +158,15 @@ const TabStudio = (() => {
         });
       }
     }, { passive: true });
+    const scheduleLayout = () => {
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {resizeFrame = 0; relayout();});
+    };
+    new ResizeObserver(() => {
+      const width = $('#tabFlowViewport').clientWidth;
+      if (width > 0 && Math.abs(width - layoutWidth) > 1) scheduleLayout();
+    }).observe($('#tabFlowViewport'));
+    window.addEventListener('chordlab:appearance', scheduleLayout);
     for (const event of ["wheel", "touchstart", "pointerdown"]) {
       $("#tabFlowViewport").addEventListener(event, () => {
         manualScrollAt = performance.now();
@@ -246,6 +258,7 @@ const TabStudio = (() => {
     $("#tabInstrument").value = instrument();
     $("#tabEngineOption").classList.toggle("hidden", isBass());
     $("#recommendedTab").classList.toggle("hidden", isBass());
+    $("#recommendedTab").dataset.currentReady = 'false';
     const select = $("#tabTuning");
     select.replaceChildren();
     for (const [name, definition] of Object.entries(ChordLabTab.TUNINGS)) {
@@ -420,6 +433,7 @@ const TabStudio = (() => {
     const recommended=task.variants?.find((variant) => variant.engine === "event_verified");
     const primary=$("#recommendedTab");
     const selected=engine === "event_verified" && !isBass();
+    primary.dataset.currentReady = String(selected && status === 'done' && !recommended?.stale);
     primary.classList.toggle("hidden", isBass() || !has || !state.current?.mine && !state.viewer?.admin && !recommended?.ready);
     primary.disabled=!!task.busy_engine || selected && ["queued","working"].includes(status) || recommended?.available === false;
     primary.textContent=selected && status === "working" ? "統整模型中…" : selected && status === "queued" ? "建議譜排隊中" :
@@ -562,7 +576,11 @@ const TabStudio = (() => {
       return;
     }
     const measures = ChordLabLayout.bars(state.current.duration, rhythm, state.current.result.rhythm);
-    rows = ChordLabLayout.rows(measures, window.matchMedia("(max-width: 720px)").matches ? 1 : 2);
+    const viewport = $("#tabFlowViewport");
+    layoutWidth = viewport.clientWidth;
+    layoutRowHeight = rowHeight();
+    rows = studio() ? ChordLabLayout.flowRows(measures, notes, Math.max(100, layoutWidth - 52)) :
+      ChordLabLayout.rows(measures, window.matchMedia("(max-width: 720px)").matches ? 1 : 2);
     for (const note of notes) {
       const first = Math.max(0, ChordLabLayout.locate(rows, note.start));
       for (let i = first; i < rows.length && rows[i].start < note.end; i++) rows[i].notes.push(note);
@@ -658,7 +676,7 @@ const TabStudio = (() => {
         NOTE_NAMES[tuning()[string] % 12]
       }<small>${tuning().length - string}</small></b><div class="tab-system-string">${tails}${starts}</div></div>`;
     }).join("");
-    return `<section class="tab-system" style="--tab-system-height:${rowHeight() - 11}px" data-tab-system="${index}"><header><span>小節 ${
+    return `<section class="tab-system" style="--tab-system-height:${rowHeight() - rowGap()}px" data-tab-system="${index}"><header><span>小節 ${
       row.measures[0].number || "前奏"
     }${
       row.measures.length > 1 ? "–" + row.measures[row.measures.length - 1].number : ""
@@ -708,6 +726,15 @@ const TabStudio = (() => {
     $("#tabOriginal").textContent = !loadedDocument && !dirty && savedDocument ? "我的版本" : "原始譜";
     $("#tabEditMode").disabled = !notes.length || !!assigning;
     $("#tabSaveStatus").textContent = saving ? "儲存中…" : dirty ? "未儲存" : revision ? "已儲存" : "";
+  }
+  function relayout() {
+    if (!notes.length || state.resultView !== 'tab' || state.page !== 'workspace' || !$('#tabFlowViewport').clientWidth) return;
+    const viewport = $('#tabFlowViewport');
+    const anchor = rows[Math.min(rows.length - 1, Math.floor(viewport.scrollTop / layoutRowHeight))]?.start || 0;
+    rebuild();
+    viewport.scrollTop = Math.max(0, ChordLabLayout.locate(rows, anchor)) * rowHeight();
+    windowStart = -1;
+    drawWindow(); update();
   }
   function remember() {
     editSerial++;
@@ -801,11 +828,14 @@ const TabStudio = (() => {
     update,
     canLeave,
     reconfigure,
+    relayout,
     inspect: () => ({
       count: notes.length,
       rowCount: rows.length,
       dirty,
       revision,
+      layoutHeight:layoutRowHeight,
+      maxBarsPerRow:Math.max(0,...rows.map(row => row.measures.length)),
       renderedRows: $$("[data-tab-system]").length,
     }),
   };

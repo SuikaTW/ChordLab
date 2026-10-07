@@ -51,6 +51,35 @@
     }
     return result;
   }
+  // Layout only: group adjacent measures using available width and onset density.
+  // A dense measure stays alone; never quantize, merge or drop audio events.
+  function flowRows(measures, notes, width) {
+    width = Math.max(100, Number(width) || 100);
+    const maxBars = width >= 680 ? 4 : 2;
+    const counts = measures.map(() => new Map());
+    for (const note of notes) {
+      if (!Number.isFinite(note.start)) continue;
+      const index = locate(measures, note.start);
+      if (index < 0 || note.start >= measures[index].end) continue;
+      const strings = counts[index], key = note.string ?? note.midi;
+      if (!strings.has(key)) strings.set(key, new Set());
+      strings.get(key).add(Math.round(note.start * 1000));
+    }
+    const weights = counts.map(strings => Math.max(140, 24 + 22 * Math.max(0, ...[...strings.values()].map(onsets => onsets.size))));
+    const result = [];
+    let slice = [], used = 0;
+    function flush() {
+      if (!slice.length) return;
+      result.push({start:slice[0].start, end:slice.at(-1).end, measures:slice, notes:[]});
+      slice = []; used = 0;
+    }
+    measures.forEach((bar, index) => {
+      if (slice.length && (slice.length >= maxBars || used + weights[index] > width)) flush();
+      slice.push(bar); used += weights[index];
+    });
+    flush();
+    return result;
+  }
   function rests(notes, start, end, minGap) {
     const spans = notes.filter((n) => n.end > start && n.start < end).sort((a, b) => a.start - b.start);
     const result = [];
@@ -63,5 +92,5 @@
     if (end - cursor >= minGap) result.push({ start: cursor, end });
     return result;
   }
-  root.ChordLabLayout = { locate, bars, rows, rests };
+  root.ChordLabLayout = { locate, bars, rows, flowRows, rests };
 })(globalThis);

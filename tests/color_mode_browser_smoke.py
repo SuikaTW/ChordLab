@@ -86,7 +86,7 @@ def run():
                             noOverflow: root.scrollWidth <= innerWidth + 1,
                             controlsFit: controls.every(r => r.left >= 0 && r.right <= innerWidth) && controls.every((r,i) => !i || r.left >= controls[i-1].right),
                             dockSurface: getComputedStyle($('#playerDock')).backgroundColor === expected,
-                            tabSurface: getComputedStyle($('.tab-system') || $('#fullTabPanel')).backgroundColor === expected,
+                            tabSurface: getComputedStyle($('#fullTabPanel')).backgroundColor === expected,
                             dialogSurface: getComputedStyle($('#tabNoteDialog')).backgroundColor === expected,
                             nativeColor: getComputedStyle(root).colorScheme === root.dataset.colorMode};
                     }''')

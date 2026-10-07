@@ -114,6 +114,23 @@ function bindEvents() {
   methodDetails.append(methodSummary, $(".method-switch"));
   $(".method-row").append(methodDetails);
   $(".method-row").append($("#workspaceUtilities"));
+  // The theme script may run before asynchronous viewer loading finishes.
+  if (document.documentElement.dataset.theme === 'studio') $('#workspaceUtilitiesBody').append(methodDetails);
+  $('#songPickerToggle').addEventListener('click', () => setSongPickerOpen(!document.body.classList.contains('song-picker-open'), true));
+  $('#sidebarImportToggle').addEventListener('click', () => setSongPickerOpen(!document.body.classList.contains('song-picker-open'), true));
+  $('#songPickerClose').addEventListener('click', () => setSongPickerOpen(false, true));
+  $('#dockSizeToggle').addEventListener('click', () => {
+    state.dockCompact = !document.body.classList.contains('compact-player');
+    syncPlayerDock();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && document.body.classList.contains('song-picker-open') && document.documentElement.dataset.theme === 'studio') setSongPickerOpen(false, true);
+  });
+  window.addEventListener('chordlab:appearance', syncPlayerDock);
+  document.addEventListener('click', event => {
+    const tools = $('#workspaceUtilities');
+    if (tools.open && !tools.contains(event.target) && document.documentElement.dataset.theme === 'studio') tools.open = false;
+  });
   $("#lyricsList").addEventListener("wheel", () => state.lyricTouched = performance.now(), { passive: true });
   $("#lyricsList").addEventListener("touchstart", () => state.lyricTouched = performance.now(), {
     passive: true,
@@ -149,6 +166,7 @@ function bindEvents() {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       setPage(button.dataset.page);
+      if (button.hasAttribute('data-new-song')) setSongPickerOpen(true, true);
     })
   );
   $(".brand").addEventListener("click", (event) => {
@@ -295,7 +313,9 @@ function setPage(page) {
 function setResultView(view) {
   const target = $(`[data-result-view="${view}"]`);
   if (!target || target.classList.contains("hidden")) view = "chords";
+  if (state.resultView !== view) state.dockCompact = null;
   state.resultView = view;
+  syncPlayerDock();
   $$("[data-result-view]").forEach((button) =>
     button.classList.toggle("active", button.dataset.resultView === view)
   );
@@ -320,6 +340,19 @@ function revealWorkspaceOnMobile() {
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
     window.scrollTo({ top, behavior });
   });
+}
+function setSongPickerOpen(open, navigate = false) {
+  document.body.classList.toggle('song-picker-open', !!open);
+  for (const id of ['songPickerToggle', 'sidebarImportToggle']) $('#'+id)?.setAttribute('aria-expanded', String(!!open));
+  if (!navigate) return;
+  if (open) {
+    $('.left-rail').scrollIntoView({block:'start', behavior:'instant'});
+    const close = $('#songPickerClose');
+    if (getComputedStyle(close).display !== 'none') close.focus({preventScroll:true});
+  } else {
+    revealWorkspaceOnMobile();
+    $('#songPickerToggle').focus({preventScroll:true});
+  }
 }
 async function loadQueueStatus() {
   if (document.hidden) return;
@@ -504,6 +537,7 @@ async function openJob(id, isPublic = false, reveal = false) {
     }
     state.currentPublic = isPublic;
     state.current = job;
+    setSongPickerOpen(false);
     if (!isPublic) localStorage.setItem(lastJobKey(), id);
     const preferredMethod = job.result?.active_method || "chordino";
     state.method = job.result?.event_verified_chord_review?.version >= 2 && job.result?.methods?.event_verified?.length &&
@@ -576,6 +610,13 @@ function syncPlayerDock() {
   $("#playerDock").classList.toggle("hidden", !visible);
   document.body.classList.toggle("has-player-dock", visible);
   $("#playerSongTitle").textContent = state.current?.title || "—";
+  document.body.classList.toggle('has-current-song', !!state.current);
+  const compact = document.documentElement.dataset.theme === 'studio' && (state.dockCompact ?? state.resultView === 'tab');
+  document.body.classList.toggle('compact-player', compact);
+  const size = $('#dockSizeToggle');
+  size.textContent = compact ? '展開' : '收起';
+  size.setAttribute('aria-pressed', String(compact));
+  size.title = compact ? '展開歌名、音量與播放資訊' : '切換精簡播放器';
 }
 
 function renderWorkspace() {

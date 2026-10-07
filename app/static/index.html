@@ -12,7 +12,8 @@
   <link rel="stylesheet" href="/static/studio.css?v=3">
   <link rel="stylesheet" href="/static/listening-room.css?v=4">
   <link rel="stylesheet" href="/static/tab-alignment.css?v=2">
-  <script src="/static/theme.js?v=7"></script>
+  <link rel="stylesheet" href="/static/practice-room.css?v=2">
+  <script src="/static/theme.js?v=9"></script>
 </head>
 <body>
   <header class="topbar">
@@ -26,7 +27,8 @@
   </header>
 
   <main class="shell" id="workspacePage">
-    <aside class="left-rail">
+    <aside class="left-rail" id="songPicker">
+      <div class="song-picker-controls studio-only"><button id="sidebarImportToggle" class="secondary" type="button" aria-expanded="false">＋ 新增歌曲</button><button id="songPickerClose" class="text-button" type="button">回到練習</button></div>
       <section class="import-panel">
         <div class="section-heading"><div><h1>加入歌曲</h1></div></div>
         <div class="source-tabs" role="tablist"><button class="tab active" data-tab="url">貼上網址</button><button class="tab" data-tab="file">上傳音檔</button></div>
@@ -70,7 +72,7 @@
       <div id="activeWorkspace" class="active-workspace hidden">
         <div class="workspace-head">
           <div class="song-heading"><div class="song-sleeve studio-only" aria-hidden="true"><div class="record-disc"></div><span class="sleeve-mark">CL / 33</span></div><div class="song-heading-copy"><p class="eyebrow" id="workMeta">ANALYSIS</p><h2 id="workTitle">—</h2><p id="workMessage" class="muted"></p></div></div>
-          <div class="workspace-actions"><button class="secondary visibility-button hidden" id="visibilityToggle">私人分析</button><div class="export-menu"><button class="secondary" id="exportToggle">匯出 <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button><div id="exportOptions" class="export-options hidden"><a data-export="pdf">PDF 和弦表</a><a data-export="midi">MIDI 音符</a><a data-export="chordpro">ChordPro</a><a data-export="json">專案 JSON</a></div></div></div>
+          <div class="workspace-actions"><button id="songPickerToggle" class="secondary studio-only" type="button" aria-expanded="false" aria-controls="songPicker">換歌／新增</button><button class="secondary visibility-button hidden" id="visibilityToggle">私人分析</button><div class="export-menu"><button class="secondary" id="exportToggle">匯出 <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button><div id="exportOptions" class="export-options hidden"><a data-export="pdf">PDF 和弦表</a><a data-export="midi">MIDI 音符</a><a data-export="chordpro">ChordPro</a><a data-export="json">專案 JSON</a></div></div></div>
         </div>
 
         <div id="progressPanel" class="progress-panel hidden"><div class="progress-row"><span id="progressText">分析中</span><b id="progressValue">0%</b></div><div class="progress-track"><i id="progressBar"></i></div><p id="progressHelp">伺服器會依序完成音訊轉換、Basic Pitch 音符辨識與 Chordino 和弦辨識。</p></div>
@@ -78,10 +80,10 @@
         <div id="resultsPanel" class="results-panel hidden">
           <audio id="audioPlayer" class="audio-engine" preload="metadata" playsinline></audio>
           <span id="practiceSlot" hidden></span><details id="practiceTools" class="practice-tools"><summary>練習工具</summary><div class="practice-controls"><label>速度 <select id="playbackSpeed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option></select></label><button id="loopA" type="button">設定 A</button><button id="loopB" type="button">設定 B</button><button id="loopToggle" type="button" aria-pressed="false" disabled>循環播放</button><button id="loopClear" type="button">清除</button><span id="loopRange" role="status"></span></div></details>
-          <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><label id="weakTrackOption" class="hidden"><input id="showWeakTracks" type="checkbox"> 顯示弱音軌 <small id="weakTrackCount"></small></label><small id="analysisTrackLabel"></small></div>
+          <span id="trackToolsSlot" hidden></span><div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><label id="weakTrackOption" class="hidden"><input id="showWeakTracks" type="checkbox"> 顯示弱音軌 <small id="weakTrackCount"></small></label><small id="analysisTrackLabel"></small></div>
           <div class="method-row"><div class="method-switch"><button data-method="ensemble" class="hidden" title="保留原本和弦，標記 BTC 的不同判斷">雙引擎比對</button><button data-method="chordino" class="active" title="較適合完整歌曲的和弦辨識">原本辨識</button><button data-method="basic_pitch" title="從音符推算和弦">音符推算</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats" aria-hidden="true"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
           <span id="downloadsSlot" hidden></span><details id="stemDownloadsPanel" class="downloads-panel hidden"><summary><span>分軌與 MIDI 下載</span><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></summary><div id="stemDownloads" class="stem-downloads"></div></details>
-          <details id="workspaceUtilities" class="workspace-utilities" data-studio-fold><summary>練習／下載</summary><div id="workspaceUtilitiesBody"></div></details>
+          <details id="workspaceUtilities" class="workspace-utilities" data-studio-fold><summary>音軌／工具</summary><div id="workspaceUtilitiesBody"></div></details>
 
           <nav class="result-tabs" aria-label="分析內容">
             <button class="active" data-result-view="chords"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h13"/></svg>和弦</button>
@@ -152,7 +154,7 @@
     </section>
   </main>
   <main id="libraryPage" class="library-page hidden">
-    <section class="library-hero"><div><p class="eyebrow">COMMUNITY ANALYSES</p><h1>公開樂庫</h1><p>先搜尋是否已經有人分析過；直接播放、查看和弦與 TAB，不必再排一次。</p></div><button class="primary compact" data-page="workspace">新增分析</button></section>
+    <section class="library-hero"><div><p class="eyebrow">COMMUNITY ANALYSES</p><h1>公開樂庫</h1><p>先搜尋是否已經有人分析過；直接播放、查看和弦與 TAB，不必再排一次。</p></div><button class="primary compact" data-page="workspace" data-new-song>新增分析</button></section>
     <section class="library-controls"><label class="library-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l4 4"/></svg><input id="librarySearch" type="search" placeholder="搜尋歌名或作品名稱" autocomplete="off"></label><div class="library-sort" role="tablist"><button data-library-sort="recent" class="active">最新公開</button><button data-library-sort="views">最多人看</button><button data-library-sort="favorites">最多收藏</button></div></section>
     <div id="librarySummary" class="library-summary">讀取公開分析…</div>
     <section id="libraryGrid" class="library-grid" aria-live="polite"></section>
@@ -163,16 +165,17 @@
     <div class="player-progress"><span>播放進度</span><input id="seekSlider" class="seek-slider" type="range" min="0" max="0" value="0" step="0.1" aria-label="播放進度"></div>
     <span id="playerTime" class="player-time">0:00 / 0:00</span>
     <label class="volume-control"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4zM15 8a6 6 0 010 8m3-11a10 10 0 010 14"/></svg><input id="volumeSlider" type="range" min="0" max="1" value="1" step="0.01" aria-label="播放器音量"><output id="volumeValue">100%</output></label>
+    <button id="dockSizeToggle" class="text-button studio-only" type="button" aria-pressed="false" title="切換精簡播放器">收起</button>
   </div>
   <div id="toast" class="toast" role="status"></div>
   <dialog id="tabNoteDialog"><form id="tabNoteForm"><h3>修正音符</h3><p id="tabEditInfo"></p><div class="time-fields"><label>弦<select id="tabEditString"><option value="5">第 1 弦</option><option value="4">第 2 弦</option><option value="3">第 3 弦</option><option value="2">第 4 弦</option><option value="1">第 5 弦</option><option value="0">第 6 弦</option></select></label><label>格數<input id="tabEditFret" type="number" min="0" max="24" step="1" required></label></div><label>確認演奏技巧<select id="tabEditTechnique"><option value="none">一般／未確認</option><option value="slide">滑音</option><option value="hammer_on">擊弦</option><option value="pull_off">勾弦</option></select></label><p id="tabEditPitch"></p><div class="editor-actions"><button id="tabDeleteNote" type="button" class="danger-text">刪除</button><button id="tabCloseDialog" type="button" class="text-button">取消</button><button type="submit" class="secondary">套用</button></div></form></dialog>
   <script src="/static/tab-engine.js?v=10" defer></script>
-  <script src="/static/tab-layout.js?v=2" defer></script>
-  <script src="/static/tab-studio.js?v=16" defer></script>
+  <script src="/static/tab-layout.js?v=4" defer></script>
+  <script src="/static/tab-studio.js?v=18" defer></script>
   <script src="/static/chord-theory.js?v=1" defer></script>
   <script src="/static/chord-voicings.js?v=2" defer></script>
   <script src="/static/practice.js?v=1" defer></script>
   <script src="/static/chord-review.js?v=1" defer></script>
-  <script src="/static/app.js?v=50" defer></script>
+  <script src="/static/app.js?v=52" defer></script>
 </body>
 </html>
