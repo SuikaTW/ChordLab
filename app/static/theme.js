@@ -9,7 +9,7 @@
     const dark = root.dataset.theme === 'studio' && (colorPreference === 'dark' || (colorPreference === 'system' && system.matches));
     root.dataset.colorMode = dark ? 'dark' : 'light';
     root.dataset.colorPreference = colorPreference;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', root.dataset.theme === 'classic' ? '#f5f3ed' : dark ? '#171b1a' : '#f6f4ef');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', root.dataset.theme === 'classic' ? '#f5f3ed' : dark ? '#131316' : '#f5f3ef');
     const select = document.getElementById('colorModeSelect');
     if (select) select.value = colorPreference;
     const menu = document.getElementById('colorMenu');

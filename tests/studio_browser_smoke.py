@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+from tab_geometry import assert_tab_alignment
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -82,6 +83,7 @@ def run():
                         assert page.evaluate('$$ (".chord-block").every(button => button.scrollWidth <= button.clientWidth + 1)'), 'Larger chord names must not be clipped'
                     if view == 'tab':
                         page.wait_for_function('() => $("#continuousTab .tab-system") && !$("#fullTabPanel").classList.contains("result-hidden")')
+                        assert_tab_alignment(page)
                         if theme == 'studio':
                             assert not page.locator('#tabAnalysisDetails').evaluate('e => e.open')
                             assert page.locator('#tabSave').is_hidden()

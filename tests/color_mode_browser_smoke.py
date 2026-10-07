@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+from tab_geometry import assert_tab_alignment
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -72,6 +73,7 @@ def run():
                     page.locator(f'[data-result-view="{view}"]').click()
                     if view == 'tab':
                         page.wait_for_function('() => $("#continuousTab .tab-system")')
+                        assert_tab_alignment(page)
                     result = page.evaluate('''() => {
                         const root = document.documentElement, bg = getComputedStyle(root).getPropertyValue('--panel').trim();
                         const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d');
@@ -107,6 +109,10 @@ def run():
             assert page.evaluate('getComputedStyle($(".song-sleeve .record-disc")).animationName') == 'record-turn'
             page.emulate_media(reduced_motion='reduce')
             assert page.evaluate('getComputedStyle($(".song-sleeve .record-disc")).animationName') == 'none'
+            assert page.evaluate('getComputedStyle($("[data-result-panel]:not(.result-hidden)")).animationName') == 'none'
+            page.locator('#colorToggle').click()
+            assert page.evaluate('getComputedStyle($(".color-menu-body")).animationName') == 'none'
+            page.keyboard.press('Escape')
             page.locator('#playToggle').click()
             assert page.evaluate('getComputedStyle($(".song-sleeve .record-disc")).animationName') == 'none'
             # Explicit dark ignores OS light; system follows live OS changes.
@@ -127,6 +133,14 @@ def run():
             page.evaluate("setPage('library')")
             page.wait_for_function('() => $(".library-card")')
             assert_contrast(page, ['.library-sort button.active'])
+            if width >= 768:
+                page.locator('.library-card').first.hover()
+                assert page.locator('.library-card').first.evaluate('e => getComputedStyle(e).transform') == 'none'
+                page.emulate_media(reduced_motion='no-preference')
+                page.wait_for_timeout(250)
+                assert page.locator('.library-card').first.evaluate('e => getComputedStyle(e).transform') != 'none'
+                page.mouse.move(0, 0)
+                page.wait_for_timeout(250)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
             if args.screenshots and width in (1440, 390):
                 page.screenshot(path=str(args.screenshots / f'dark-{width}-library.png'))

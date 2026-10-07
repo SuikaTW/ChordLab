@@ -1,0 +1,18 @@
+/* Shared geometry correction; keep string labels, frets and sustain on one axis.
+   Row heights remain unchanged because TAB virtualization uses fixed heights. */
+#continuousTab {--tab-string-height:29px}
+#continuousTab .tab-system-string {border-top:0}
+#continuousTab .tab-system-row>b {display:flex;align-items:center;gap:4px;line-height:1}
+#continuousTab .tab-system-row>b small {display:inline;line-height:1}
+#continuousTab .tab-system-string::before {
+  content:"";position:absolute;top:50%;left:0;right:0;height:1px;
+  transform:translateY(-50%);background:var(--muted);opacity:.7;pointer-events:none;
+}
+#continuousTab .tab-system-string button {
+  top:50%;transform:translate(-50%,-50%);display:grid;place-items:center;line-height:1;
+}
+#continuousTab .tab-sustain {top:50%;transform:translateY(-50%);z-index:1}
+#continuousTab .tab-rhythm-grid {top:calc(var(--tab-string-height)/2);bottom:calc(var(--tab-string-height)/2)}
+#continuousTab .tab-system-playhead {top:calc(var(--tab-string-height)/2);bottom:calc(var(--tab-string-height)/2)}
+#continuousTab .tab-rest {top:50%;transform:translate(-50%,-50%)}
+@media(max-width:720px) {#continuousTab {--tab-string-height:27px}}

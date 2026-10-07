@@ -1,16 +1,16 @@
 /* Listening Room: original CSS artwork, independent from the preserved classic UI. */
 html[data-theme="studio"] {
   color-scheme:light;
-  --ink:#292f2c;--paper:#f6f4ef;--panel:#fffdf9;--line:#deded4;
-  --muted:#626c65;--soft:#eeeee6;--coral:#32634e;--acid:#deeadb;--blue:#cbdccd;
-  --selected:#e6eee3;--selected-line:#9bac98;--button-ink:#fff;
-  --desk-shadow:0 12px 36px #242d2210;
+  --ink:#29272e;--paper:#f5f3ef;--panel:#fffdf9;--line:#e0dcd6;
+  --muted:#706972;--soft:#eeebe6;--coral:#29272e;--acid:#e9dfce;--blue:#d6ccd9;
+  --accent:#947044;--selected:#eee6d9;--selected-line:#aa8c64;--button-ink:#fffdf9;
+  --desk-shadow:0 12px 36px #28232b12;
 }
 html[data-theme="studio"][data-color-mode="dark"] {
   color-scheme:dark;
-  --ink:#e9ede4;--paper:#171b1a;--panel:#202624;--line:#38413b;
-  --muted:#abb6ac;--soft:#2a322d;--coral:#b5d7a5;--acid:#c3dcb6;--blue:#5d7966;
-  --selected:#303f32;--selected-line:#799477;--button-ink:#1a2a1a;
+  --ink:#eeebf0;--paper:#131316;--panel:#1d1c21;--line:#39363e;
+  --muted:#b0aab6;--soft:#27252c;--coral:#e5dbc9;--acid:#e5dbc9;--blue:#7f738b;
+  --accent:#d1b080;--selected:#342d27;--selected-line:#b2956f;--button-ink:#29231d;
   --desk-shadow:0 12px 36px #0003;
 }
 html[data-theme="studio"] body {background:var(--paper)}
@@ -25,7 +25,7 @@ html[data-theme="studio"] .primary:hover {background:var(--coral);filter:brightn
 html[data-theme="studio"] :is(.top-nav button.active,.source-tabs .tab.active,.method-switch button.active) {background:var(--panel);color:var(--coral)}
 html[data-theme="studio"] :is(.job-item.active,.chord-block.selected,.chord-block.playing,.chord-block:hover,.voicing-positions button[aria-pressed="true"],.lyrics-list button.active,.library-favorite.active) {background:var(--selected);border-color:var(--selected-line)}
 html[data-theme="studio"] :is(.secondary:hover,.drop-zone:hover,.drop-zone.drag,.stem-option:hover,.lyrics-list button:hover) {background:var(--soft);border-color:var(--selected-line)}
-html[data-theme="studio"] .brand-mark {background:var(--coral);color:var(--button-ink);border-radius:50%;letter-spacing:-1px}
+html[data-theme="studio"] .brand-mark {background:var(--ink);color:var(--paper);border-radius:50%;letter-spacing:-1px;box-shadow:inset 0 0 0 1px var(--accent)}
 html[data-theme="studio"] .brand small {display:none}
 html[data-theme="studio"] .topbar {border-bottom:1px solid var(--line)}
 html[data-theme="studio"] .source-tabs .tab.active:after {display:none}
@@ -36,15 +36,15 @@ html[data-theme="studio"] .song-heading-copy {min-width:0}
 html[data-theme="studio"] #workMeta {font-family:inherit;letter-spacing:.04em;font-size:13px;font-weight:500;color:var(--muted);margin-bottom:8px}
 html[data-theme="studio"] #workTitle {font-size:clamp(25px,2.4vw,36px);letter-spacing:-.025em;line-height:1.4}
 html[data-theme="studio"] .song-sleeve {position:relative;flex:0 0 112px;height:112px;border-radius:5px 15px 15px 5px;background:var(--song-accent,#c77753);box-shadow:inset 5px 0 #0002,0 8px 20px #0001;overflow:hidden}
-html[data-theme="studio"] .record-disc {position:absolute;width:90px;height:90px;border-radius:50%;left:30px;top:9px;background:repeating-radial-gradient(circle at center,#252825 0 1px,#373a35 2px 3px);box-shadow:0 2px 5px #0004;transform:rotate(-25deg)}
+html[data-theme="studio"] .record-disc {position:absolute;width:90px;height:90px;border-radius:50%;left:30px;top:9px;background:conic-gradient(from 25deg,transparent 20deg,#ffffff18 35deg,transparent 65deg 200deg,#ffffff18 230deg,transparent 260deg),repeating-radial-gradient(circle at center,#27262b 0 1px,#3b383e 2px 3px);box-shadow:0 2px 5px #0004;transform:rotate(-25deg)}
 html[data-theme="studio"] .record-disc:before {content:"";position:absolute;inset:28px;border-radius:50%;background:var(--song-accent,#c77753);border:1px solid #fff3}
-html[data-theme="studio"] .record-disc:after {content:"";position:absolute;inset:41px;background:#1e2420;border-radius:50%;box-shadow:0 0 0 1px #fff4}
-html[data-theme="studio"] .sleeve-mark {position:absolute;left:12px;bottom:9px;font:600 10px "ChordLab Manrope",sans-serif;color:#161a17;letter-spacing:1px}
+html[data-theme="studio"] .record-disc:after {content:"";position:absolute;inset:41px;background:#242127;border-radius:50%;box-shadow:0 0 0 1px #fff4}
+html[data-theme="studio"] .sleeve-mark {position:absolute;left:12px;bottom:9px;font:600 10px "ChordLab Manrope",sans-serif;color:#242127;letter-spacing:1px}
 html[data-theme="studio"] .music-playing .song-sleeve .record-disc {animation:record-turn 14s linear infinite}
 @keyframes record-turn {from{transform:rotate(-25deg)}to{transform:rotate(335deg)}}
 html[data-theme="studio"] .job-item {position:relative;gap:12px;background:transparent;border-radius:10px;padding:10px;min-height:62px}
 html[data-theme="studio"] .song-stamp {flex:0 0 34px;width:34px;height:34px;border-radius:5px;background:var(--song-accent);position:relative}
-html[data-theme="studio"] .song-stamp:after {content:"";position:absolute;inset:5px;border-radius:50%;background:repeating-radial-gradient(circle,#353b34 0 1px,#232822 2px 3px);border:7px solid #252a24;box-shadow:inset 0 0 0 3px var(--song-accent)}
+html[data-theme="studio"] .song-stamp:after {content:"";position:absolute;inset:5px;border-radius:50%;background:repeating-radial-gradient(circle,#3b383e 0 1px,#27262b 2px 3px);border:7px solid #27262b;box-shadow:inset 0 0 0 3px var(--song-accent)}
 html[data-theme="studio"] .job-title {min-width:0;flex:1}
 html[data-theme="studio"] .job-item:has(.job-state:not(.done)) {padding-left:56px}
 html[data-theme="studio"] .job-item:has(.job-state:not(.done)) .song-stamp {position:absolute;left:10px;top:12px}
@@ -71,15 +71,15 @@ html[data-theme="studio"] :is(.practice-controls button,.practice-controls selec
 html[data-theme="studio"] .tab-system {color:var(--ink)}
 html[data-theme="studio"] .tab-system-string {border-color:var(--muted)}
 html[data-theme="studio"] .tab-system-string button {background:var(--ink);color:var(--paper);border-color:var(--panel)}
-html[data-theme="studio"] .tab-system-string button:hover {background:var(--coral);color:var(--button-ink)}
+html[data-theme="studio"] .tab-system-string button:is(:hover,:focus-visible) {background:var(--coral);color:var(--button-ink)}
 html[data-theme="studio"] .tab-system-string button.suspect {background:#986522;color:#fff}
-html[data-theme="studio"] .tab-system-string button.edited {background:#346f63;color:#fff}
+html[data-theme="studio"] .tab-system-string button.edited {background:#62547b;color:#fff}
 html[data-theme="studio"] .tab-beat {background:repeating-linear-gradient(to bottom,var(--line),var(--line) 1px,transparent 1px,transparent 4px)}
 html[data-theme="studio"] .tab-barline {background:var(--muted)}
 html[data-theme="studio"] :is(.tab-system header,.tab-system-row>b) {color:var(--muted)}
 html[data-theme="studio"] .tab-warnings {background:#fff0cc;color:#72500e}
 html[data-theme="studio"][data-color-mode="dark"] .tab-warnings {background:#3d331f;color:#f2d596}
-html[data-theme="studio"] .toast {background:#29342b;color:#fff}
+html[data-theme="studio"] .toast {background:#302b35;color:#fff}
 html[data-theme="studio"] .toast.error {background:#a63422}
 html[data-theme="studio"] button:focus-visible,html[data-theme="studio"] a:focus-visible,html[data-theme="studio"] input:focus-visible,html[data-theme="studio"] select:focus-visible,html[data-theme="studio"] summary:focus-visible {outline:3px solid var(--selected-line);outline-offset:3px}
 /* Small appearance menu keeps the phone header uncluttered. */
@@ -108,4 +108,31 @@ html[data-theme="studio"] button:focus-visible,html[data-theme="studio"] a:focus
   html[data-theme="studio"] .top-nav button.active {background:var(--panel)}
 }
 @media(max-width:360px) {html[data-theme="studio"] .brand-mark {display:none}html[data-theme="studio"] .brand b {font-size:18px}}
-@media(prefers-reduced-motion:reduce) {html[data-theme="studio"] .record-disc {animation:none!important}html[data-theme="studio"] .library-card {transition:none}}
+/* Restrained motion: no scroll hijacking, perpetual glow or TAB row transforms. */
+html[data-theme="studio"] .result-tabs button.active {border-bottom-color:var(--accent)}
+html[data-theme="studio"] :is(.chord-playhead,.tab-system-playhead) {background:var(--accent);box-shadow:none}
+html[data-theme="studio"] .chord-block.playing {border-color:var(--accent);box-shadow:inset 0 -3px var(--accent)}
+html[data-theme="studio"] .tab-sustain {background:color-mix(in srgb,var(--accent) 40%,transparent)}
+html[data-theme="studio"] .tab-system header i {background:var(--line)}
+html[data-theme="studio"] :is(.primary,.icon-button) {transition:transform .16s ease,border-color .16s,box-shadow .16s,filter .16s}
+html[data-theme="studio"] .primary:not(:disabled):active {transform:scale(.98)}
+html[data-theme="studio"] .icon-button:active {transform:scale(.95)}
+html[data-theme="studio"] .library-card {transition:transform .2s ease,box-shadow .2s,border-color .2s}
+html[data-theme="studio"] .color-menu[open] .color-menu-body,
+html[data-theme="studio"] #workspaceUtilities[open] #workspaceUtilitiesBody {animation:room-reveal .16s ease-out}
+html[data-theme="studio"] .analysis-options[open] .analysis-options-body,
+html[data-theme="studio"] .studio-fold[open]>:not(summary),
+html[data-theme="studio"] .tab-options[open] .tab-settings {animation:room-reveal .2s ease-out}
+html[data-theme="studio"] [data-result-panel]:not(.result-hidden) {animation:room-reveal .2s ease-out}
+html[data-theme="studio"] .player-dock:not(.hidden) {animation:room-dock .2s ease-out}
+@keyframes room-reveal {from{opacity:0;translate:0 5px}to{opacity:1;translate:0 0}}
+@keyframes room-dock {from{opacity:0}to{opacity:1}}
+@media(hover:hover) and (pointer:fine) {
+  html[data-theme="studio"] .library-card:hover {transform:translateY(-3px);box-shadow:var(--desk-shadow);border-color:var(--selected-line)}
+  html[data-theme="studio"] .primary:not(:disabled):hover {transform:translateY(-1px);box-shadow:0 5px 12px #0002}
+}
+@media(prefers-reduced-motion:reduce) {
+  html[data-theme="studio"] :is(.record-disc,.color-menu-body,#workspaceUtilitiesBody,.analysis-options-body,.studio-fold>*:not(summary),.tab-settings,[data-result-panel],.player-dock) {animation:none!important}
+  html[data-theme="studio"] :is(button,.library-card) {transition:none!important}
+  html[data-theme="studio"] :is(.library-card:hover,.primary:hover,.primary:active,.icon-button:active) {transform:none!important}
+}

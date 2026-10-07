@@ -429,7 +429,7 @@ function lastJobKey() {
 function songAccent(job) {
   let hash = 0;
   for (const char of String(job.title || job.id || '')) hash = (hash * 31 + char.codePointAt(0)) | 0;
-  return ['#c77753', '#7d8e73', '#8d80a8', '#bf9b50', '#638b96'][Math.abs(hash) % 5];
+  return ['#b19777', '#9a91a4', '#8a96a2', '#b29798', '#aba397'][Math.abs(hash) % 5];
 }
 function renderJobs() {
   const list = $("#jobsList");
@@ -584,6 +584,15 @@ function renderWorkspace() {
   $("#activeWorkspace").classList.remove("hidden");
   $("#workTitle").textContent = state.current.title;
   $("#activeWorkspace").style.setProperty('--song-accent', songAccent(state.current));
+  const workspace = $("#activeWorkspace");
+  if (workspace.dataset.visualJob !== state.current.id) {
+    workspace.dataset.visualJob = state.current.id;
+    if (document.documentElement.dataset.theme === 'studio' && !document.hidden && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const heading = $(".song-heading");
+      heading.getAnimations().forEach(animation => animation.cancel());
+      heading.animate([{opacity:0, transform:'translateY(6px)'}, {opacity:1, transform:'translateY(0)'}], {duration:220, easing:'ease-out'});
+    }
+  }
   $("#workMeta").textContent =
     { queued: "排隊等候", working: "正在分析", done: "分析完成", failed: "分析失敗" }[state.current.status] ||
     "音樂分析";
