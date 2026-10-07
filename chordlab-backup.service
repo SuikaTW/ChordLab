@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up ChordLab database, source, and media to HDD
+ConditionPathIsMountPoint=/mnt/sdc
+ConditionPathIsMountPoint=/mnt/sdb
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/suika/chordlab
+EnvironmentFile=/home/suika/chordlab/.env
+ExecStart=/home/suika/chordlab/.venv/bin/python /home/suika/chordlab/tools/backup_project.py
+UMask=0077
+NoNewPrivileges=true

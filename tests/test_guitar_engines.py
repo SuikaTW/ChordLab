@@ -120,8 +120,8 @@ class GuitarEngineTests(unittest.TestCase):
 
     def test_raw_chord_manual_flags_survive_subsequent_saves(self):
         headers={'Origin':'http://testserver'}
-        self.client.put('/api/jobs/song/chords',headers=headers,json={'method':'chordino','chords':[dict(start=0,end=10,chord='Am')]})
-        self.client.put('/api/jobs/song/chords',headers=headers,json={'method':'chordino','chords':[dict(start=0,end=10,chord='Am')]})
+        self.client.put('/api/jobs/song/chords',headers=headers,json={'method':'chordino','revision':0,'chords':[dict(start=0,end=10,chord='Am')]})
+        self.client.put('/api/jobs/song/chords',headers=headers,json={'method':'chordino','revision':1,'chords':[dict(start=0,end=10,chord='Am')]})
         with main.db() as c:result=json.loads(c.execute('SELECT result FROM jobs').fetchone()[0])
         self.assertTrue(result['methods']['chordino'][0]['manual'])
 
@@ -432,7 +432,7 @@ class GuitarEngineTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/jobs/song/chord-refinement").json()["status"], "done")
         refined = [{"start": 0, "end": 10, "chord": "Dm"}]
         saved = self.client.put("/api/jobs/song/chords", headers={"Origin": "http://testserver"},
-            json={"method": "chord_v2", "chords": refined})
+            json={"method": "chord_v2", "chords": refined, "revision": 0})
         self.assertEqual(saved.status_code, 200)
         with main.db() as connection:
             saved_result = json.loads(connection.execute("SELECT result FROM jobs").fetchone()[0])

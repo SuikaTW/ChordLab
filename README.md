@@ -1,6 +1,8 @@
 # ChordLab
 
-The default Quiet Studio interface offers a persistent bottom player while reading TAB. The header style selector switches back to the original look without interrupting playback; it remembers the browser preference. The original source archive, Git tag and restore details are documented in [UI backup notes](docs/ui-redesign-20261008.md).
+The Studio interface offers a persistent bottom player while reading TAB. The header style selector switches back to the original look without interrupting playback; it remembers the browser preference. The original source archive, Git tag and restore details are documented in [UI backup notes](docs/ui-redesign-20261008.md).
+
+Recent safeguards add revocable login sessions, optimistic revisions and restore history for chord edits, a streaming upload body limit, a bounded global analysis queue, and single-flight audio mixes. Daily HDD snapshots cover the database, songs, source, and private configuration; see [operations and recovery](docs/operations-20261008.md). GitHub Actions runs the isolated Python and Deno tests.
 
 The practice workspace includes private, account-scoped TAB editing, guitar-stem
 preview before optional transcription, estimated beat/bar layout with manual
@@ -37,7 +39,7 @@ Explicitly confirmed manual TAB edits can be stored as a private reference snaps
 
 `tools/benchmark_verification.py` is a reproducible synthetic single/polyphonic reference corpus using the existing pitch/onset F1 scorer; `tests/audio_verification_checks.py` adds held-out timbres and conservative guard tests. Neither synthetic metrics nor spectral residual gains establish real-song accuracy; independent real annotations are still needed. Reference exports are user-confirmed snapshots, not independently verified full scores.
 
-Continuous TAB never falls back to the full mix. The guitar workflow uses the experimental six-stem model and defaults to reviewing a guitar preview before optional transcription; all-stem MIDI is separate. An already isolated guitar recording can bypass separation. TAB uses estimated bars (two per desktop row, one per mobile row), with editable tempo/meter/first-beat timing. Clean suppresses extremely weak/short events; Full retains more detections. These layouts are estimates, not verified original scores.
+Continuous TAB never falls back to the full mix. The guitar workflow uses the experimental six-stem model and defaults to reviewing a guitar preview before optional transcription; all-stem MIDI is separate. An already isolated guitar recording can bypass separation. TAB uses estimated bars with adaptive row grouping based on available width and note density, plus editable tempo/meter/first-beat timing. Clean suppresses extremely weak/short events; Full retains more detections. These layouts are estimates, not verified original scores.
 
 Users may explicitly publish a completed analysis to the shared library. Public analyses are searchable and ranked by unique signed-in viewers or favorites; exact matching public URL jobs with the same analysis options are reused instead of being processed again. Private jobs remain visible only to their owner and administrators.
 

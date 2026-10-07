@@ -35,6 +35,8 @@ def run():
             page.wait_for_function('() => state.current && state.jobs.length')
             page.evaluate('(id) => openJob(id)', JOB)
             page.wait_for_function('() => state.current?.id === "'+JOB+'" && state.chordEntries?.length')
+            assert page.locator('.account-menu > summary').is_visible()
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1'), 'Header or workspace overflows viewport'
             page.evaluate('window.savedAudio = $("#audioPlayer")')
             assert page.locator('.import-panel').is_hidden()
             if width <= 720:

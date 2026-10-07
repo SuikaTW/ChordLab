@@ -345,7 +345,7 @@ class TabApiTests(unittest.TestCase):
         response = self.client.request("DELETE", f"/api/admin/jobs/{job_id}", json={"confirm": job_id}, headers={"Origin": "http://testserver"})
         self.assertEqual(response.status_code, 409)
 
-    def test_busy_media_pool_does_not_block_health_requests(self):
+    def test_duplicate_mix_is_shared_without_blocking_health_requests(self):
         pool = LightTaskPool(workers=1, capacity=1)
         started, finish = threading.Event(), threading.Event()
         def blocked_mix(*args):
@@ -358,8 +358,8 @@ class TabApiTests(unittest.TestCase):
                 first = asyncio.create_task(client.get("/api/jobs/song/audio-mix?tracks=original,guitar"))
                 try:
                     self.assertTrue(await asyncio.to_thread(started.wait, 2))
-                    busy = await asyncio.wait_for(client.get("/api/jobs/song/audio-mix?tracks=original,guitar"), 1)
-                    self.assertEqual(busy.status_code, 429)
+                    second = asyncio.create_task(client.get("/api/jobs/song/audio-mix?tracks=original,guitar"))
+                    await asyncio.sleep(.05)
                     health = await asyncio.wait_for(client.get("/healthz"), 1)
                     self.assertEqual(health.status_code, 200)
                     self.assertFalse(finish.is_set())
@@ -367,9 +367,11 @@ class TabApiTests(unittest.TestCase):
                     finish.set()
                     response = await asyncio.wait_for(first, 2)
                     self.assertEqual(response.status_code, 200)
+                    self.assertEqual((await asyncio.wait_for(second, 2)).status_code, 200)
         try:
-            with patch.object(main, "light_tasks", pool), patch.object(main, "build_audio_mix", side_effect=blocked_mix):
+            with patch.object(main, "light_tasks", pool), patch.object(main, "build_audio_mix", side_effect=blocked_mix) as work:
                 asyncio.run(scenario())
+                self.assertEqual(work.call_count, 1)
         finally:
             finish.set()
             pool.executor.shutdown(wait=True)

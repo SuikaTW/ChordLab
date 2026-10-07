@@ -20,3 +20,8 @@ class DownloadPreparation:
     def take(self, key):
         with self.lock:
             return self.futures.pop(key, None)
+
+    def cancel(self, key):
+        with self.lock:
+            future = self.futures.pop(key, None)
+        return future.cancel() if future is not None else False

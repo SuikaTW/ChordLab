@@ -152,7 +152,7 @@ class GuitarJobTests(unittest.TestCase):
             connection.execute("INSERT INTO jobs(id,title,source,status,duration,result,owner,created_at,updated_at) VALUES (?,?,?,'done',10,?,'tester',1,1)",
                                (job_id, "test", "test", json.dumps(result)))
         changed = [{"start": 0, "end": 5, "chord": "Cmaj7"}, {"start": 5, "end": 10, "chord": "G"}]
-        response = self.client.put(f"/api/jobs/{job_id}/chords", json={"method": "ensemble", "chords": changed}, headers={"Origin": "http://testserver"})
+        response = self.client.put(f"/api/jobs/{job_id}/chords", json={"method": "ensemble", "chords": changed, "revision": 0}, headers={"Origin": "http://testserver"})
         self.assertEqual(response.status_code, 200, response.text)
         with main.db() as connection:
             saved = json.loads(connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()[0])

@@ -246,6 +246,25 @@ function bindEvents() {
   });
   $("#segmentForm").addEventListener("submit", saveSegment);
   $("#deleteSegment").addEventListener("click", deleteSegment);
+  $("#restoreChords").addEventListener("click", restorePreviousChords);
+  $("#cancelJob").addEventListener("click", async () => {
+    const id = state.current?.id;
+    if (!id || !confirm("確定取消這次分析？正在執行的步驟會先完成。")) return;
+    try {
+      await api(`/api/jobs/${id}/cancel`, { method: "POST" });
+      if (state.current?.id !== id) return;
+      state.current = await api(`/api/jobs/${id}?include_notes=false`);
+      renderWorkspace();
+      loadJobs(); loadQueueStatus();
+    } catch (error) { toast(error.message, true); }
+  });
+  $("#logoutAll").addEventListener("click", async () => {
+    if (!confirm("確定登出所有裝置？你也需要重新登入。")) return;
+    try {
+      await api("/api/logout-all", { method: "POST" });
+      location.href = "/login";
+    } catch (error) { toast(error.message, true); }
+  });
   $("#timeline").addEventListener("click", (event) => {
     const button = event.target.closest("[data-segment]");
     if (button) selectSegment(Number(button.dataset.segment), true);
@@ -482,7 +501,7 @@ function renderJobs() {
       }${job.is_public ? " · 公開" : ""}</span><span class="job-state ${job.status}">${
         job.status === "queued"
           ? `前方 ${job.ahead_count || 0} 首`
-          : { working: `${job.progress}%`, done: "完成", failed: "失敗" }[job.status]
+          : { working: `${job.progress}%`, done: "完成", failed: "失敗", cancelled: "已取消" }[job.status]
       }</span></button>`
     ).join("") + (state.jobs.length > 8
       ? `<button class="jobs-more" id="jobsMore">${
@@ -635,7 +654,7 @@ function renderWorkspace() {
     }
   }
   $("#workMeta").textContent =
-    { queued: "排隊等候", working: "正在分析", done: "分析完成", failed: "分析失敗" }[state.current.status] ||
+    { queued: "排隊等候", working: "正在分析", done: "分析完成", failed: "分析失敗", cancelled: "已取消" }[state.current.status] ||
     "音樂分析";
   $("#workMessage").textContent = state.current.status === "done" ? "" : state.current.message;
   const visibility = $("#visibilityToggle");
@@ -643,18 +662,23 @@ function renderWorkspace() {
   visibility.classList.toggle("public", !!state.current.is_public);
   visibility.textContent = state.current.is_public ? "公開分析" : "私人分析";
   const working = ["queued", "working"].includes(state.current.status);
-  $("#progressPanel").classList.toggle("hidden", !working && state.current.status !== "failed");
+  $("#progressPanel").classList.toggle("hidden", !working && !["failed", "cancelled"].includes(state.current.status));
+  $("#cancelJob").classList.toggle("hidden", !working || !!state.current.cancel_requested || !(state.current.mine || state.viewer?.admin));
   $("#resultsPanel").classList.toggle("hidden", state.current.status !== "done");
-  $("#progressText").textContent = state.current.status === "failed"
+  $("#progressText").textContent = state.current.status === "cancelled" ? "已取消"
+    : state.current.status === "failed"
     ? "分析失敗"
     : state.current.status === "queued"
     ? `正在等候 · 前面還有 ${state.current.ahead_count || 0} 首`
     : state.current.message;
-  $("#progressValue").textContent = state.current.status === "queued"
+  $("#progressValue").textContent = state.current.status === "cancelled" ? "—"
+    : state.current.status === "queued"
     ? "等候中"
     : `${state.current.progress}%`;
   $("#progressBar").style.width = state.current.status === "queued" ? "2%" : `${state.current.progress}%`;
-  $("#progressHelp").textContent = state.current.status === "queued"
+  $("#progressHelp").textContent = state.current.status === "cancelled" ? "可以重新加入歌曲；已取消的這次分析不再占用佇列。"
+    : state.current.cancel_requested ? "正在完成目前步驟，之後會停止。"
+    : state.current.status === "queued"
     ? "伺服器一次分析一首；前一首完成後會自動接續，不需要留著網頁。"
     : state.current.separate_stems
     ? `這次會先用 Demucs 做${
@@ -704,8 +728,6 @@ function renderWorkspace() {
     renderCapo();
     renderLyrics();
     if (state.resultView === "tab") loadContinuousTab();
-    $("#durationStat").textContent = durationText(state.current.duration);
-    $("#notesStat").textContent = `${state.current.note_count || 0} notes`;
     switchMethod(state.method, false);
   }
 }
@@ -1367,7 +1389,27 @@ function renderEditor() {
     $("#endInput").value = segment.end;
   }
   $("#saveState").textContent = "尚未修改";
+  $("#restoreChords").disabled = !editable || !(state.current?.result?.chord_revisions?.[state.method] > 0);
   renderCandidates(segment, editable);
+}
+
+async function restorePreviousChords() {
+  if (!state.current || !confirm("復原這個辨識方式的上一版和弦？目前版本仍保留在歷史紀錄。")) return;
+  const id = state.current.id, method = state.method;
+  const revision = state.current.result.chord_revisions?.[method] ?? 0;
+  if (!revision) return;
+  try {
+    await api(`/api/jobs/${id}/chords/restore`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method, revision, restore_revision: revision - 1 }),
+    });
+    const latest = await api(`/api/jobs/${id}?include_notes=false`);
+    if (state.current?.id !== id) return;
+    state.current = latest;
+    state.selected = -1;
+    renderTimeline(); renderEditor(); renderVoicing(null);
+    toast("已復原上一版和弦");
+  } catch (error) { toast(error.message, true); }
 }
 function renderCandidates(segment, editable) {
   const v2 = ["chord_v2", "cross_verified", "event_verified","local_review"].includes(state.method);
@@ -1411,14 +1453,17 @@ function renderCandidates(segment, editable) {
 }
 async function persist() {
   try {
-    await api(`/api/jobs/${state.current.id}/chords`, {
+    const saved = await api(`/api/jobs/${state.current.id}/chords`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method: state.method, chords: chords() }),
+      body: JSON.stringify({ method: state.method, chords: chords(),
+        revision: state.current.result.chord_revisions?.[state.method] ?? 0 }),
     });
+    (state.current.result.chord_revisions ||= {})[state.method] = saved.revision;
     $("#saveState").textContent = "已儲存";
     toast("修正已儲存");
   } catch (error) {
+    if (error.message.includes("其他分頁")) $("#saveState").textContent = "版本衝突，請重新開啟歌曲";
     toast(error.message, true);
   }
 }

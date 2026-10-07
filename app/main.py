@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -16,9 +17,11 @@ import sqlite3
 # Required for fixed argv calls to bundled analysis binaries; shell execution is never used.
 import subprocess  # nosec B404
 import threading
+import tempfile
 import time
 import uuid
 import wave
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -41,6 +44,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.stem_activity import detect_activity
 from app.light_tasks import LightTaskPool, PoolBusy
 from app.preparation import DownloadPreparation
+from app.checkpoints import StageCache
+from app.upload_limits import UploadBodyLimit
 from app.tab_models import TabDocument
 from app.chord_comparison import compare_chords
 from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available, recommendation_current, recommendation_digest, harmony_audio, RECOMMENDATION_REVISION
@@ -69,9 +74,12 @@ DENO = ROOT / "bin" / "deno"
 YTDLP = ROOT / ".venv" / "bin" / "yt-dlp"
 BWRAP = Path(shutil.which("bwrap")) if shutil.which("bwrap") else None
 MAX_UPLOAD = int(os.getenv("CHORDLAB_MAX_UPLOAD_MB", "200")) * 1024 * 1024
+MAX_REQUEST_BODY = MAX_UPLOAD + 1024 * 1024
+MIN_FREE_UPLOAD = MAX_UPLOAD + 512 * 1024 * 1024
 MAX_DURATION = int(os.getenv("CHORDLAB_MAX_DURATION_MIN", "20")) * 60
 ANALYSIS_WORKERS = max(1, min(3, int(os.getenv("CHORDLAB_ANALYSIS_WORKERS", "1"))))
 MAX_ACTIVE_PER_USER = max(1, min(10, int(os.getenv("CHORDLAB_MAX_ACTIVE_PER_USER", "2"))))
+MAX_TOTAL_PENDING = max(1, min(200, int(os.getenv("CHORDLAB_MAX_TOTAL_PENDING", "24"))))
 DAILY_JOB_LIMIT = max(1, min(100, int(os.getenv("CHORDLAB_DAILY_JOB_LIMIT", "5"))))
 SESSION_DAYS = max(1, min(30, int(os.getenv("CHORDLAB_SESSION_DAYS", "7"))))
 ALLOWED_HOSTS = {
@@ -128,10 +136,16 @@ download_preparation = DownloadPreparation()
 heavy_analysis_slot = threading.BoundedSemaphore(1)
 job_submission_lock = threading.Lock()
 mix_generation_lock = threading.Lock()
+mix_key_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+mix_requests_lock = threading.Lock()
+mix_requests: dict[str, asyncio.Task] = {}
+upload_lock = threading.Lock()
+active_uploads: set[str] = set()
 login_attempts: dict[str, list[float]] = {}
 login_lock = threading.Lock()
 
 app = FastAPI(title="ChordLab", docs_url=None, redoc_url=None)
+app.add_middleware(UploadBodyLimit, limit=lambda: MAX_REQUEST_BODY)
 app.add_middleware(SessionMiddleware, secret_key=SECRET or secrets.token_hex(32), https_only=SECURE_COOKIE, same_site="lax", max_age=600)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 oauth = OAuth()
@@ -204,6 +218,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE jobs ADD COLUMN public_at INTEGER")
         if "error_detail" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN error_detail TEXT")
+        if "cancel_requested" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS job_views (
@@ -239,6 +255,16 @@ def init_db() -> None:
             )
             """
         )
+        connection.execute("""CREATE TABLE IF NOT EXISTS login_sessions (
+            token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+            expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_login_sessions_user ON login_sessions(user_id, expires_at)")
+        connection.execute("""CREATE TABLE IF NOT EXISTS chord_edits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            method TEXT NOT NULL, revision INTEGER NOT NULL,
+            actor TEXT NOT NULL, chords TEXT NOT NULL, created_at INTEGER NOT NULL)""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_chord_edits_job_method ON chord_edits(job_id, method, revision DESC)")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS admin_audit (
@@ -338,6 +364,11 @@ def touch_user(identity: dict, display_name: str = "") -> sqlite3.Row:
     key = identity_key(identity)
     subject = identity["sub"].lower()
     with db() as connection:
+        existing = connection.execute("SELECT * FROM users WHERE id=?", (key,)).fetchone()
+        if (existing and existing["last_seen"] >= now - 300
+                and (not display_name or existing["display_name"] == display_name[:120])
+                and (not configured_admin(identity) or existing["is_admin"])):
+            return existing
         connection.execute(
             """
             INSERT INTO users(id,subject,provider,display_name,is_admin,is_blocked,created_at,last_seen)
@@ -366,10 +397,16 @@ def audit_admin(actor: dict, action: str, target: str, detail: dict | None = Non
 
 
 def sign_session(subject: str, provider: str, expires: int) -> str:
+    session_id = secrets.token_urlsafe(32)
     body = base64.urlsafe_b64encode(json.dumps(
-        {"sub": subject, "provider": provider, "expires": expires}, separators=(",", ":")
+        {"sub": subject, "provider": provider, "expires": expires, "sid": session_id}, separators=(",", ":")
     ).encode()).decode().rstrip("=")
     signature = hmac.new(SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+    with db() as connection:
+        connection.execute("DELETE FROM login_sessions WHERE expires_at < ?", (int(time.time()),))
+        connection.execute("INSERT INTO login_sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)",
+                           (hashlib.sha256(session_id.encode()).hexdigest(),
+                            identity_key({"sub": subject.lower(), "provider": provider}), expires, int(time.time())))
     return f"{body}.{signature}"
 
 
@@ -384,9 +421,17 @@ def session_identity(token: str | None) -> dict | None:
         valid = (
             payload.get("provider") in {"local", "google"}
             and bool(payload.get("sub"))
+            and bool(payload.get("sid"))
             and int(payload["expires"]) > int(time.time())
             and hmac.compare_digest(signature, expected)
         )
+        if valid:
+            with db() as connection:
+                row = connection.execute("SELECT 1 FROM login_sessions WHERE token_hash=? AND user_id=? AND expires_at>=?",
+                    (hashlib.sha256(payload["sid"].encode()).hexdigest(),
+                     identity_key({"sub": str(payload["sub"]).lower(), "provider": payload["provider"]}),
+                     int(time.time()))).fetchone()
+            valid = bool(row)
         return {"sub": str(payload["sub"]).lower(), "provider": payload["provider"]} if valid else None
     except (KeyError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
         return None
@@ -436,11 +481,53 @@ async def authentication(request: Request, call_next):
             response.delete_cookie(COOKIE)
             return response
         request.state.identity = identity
+    upload_owner = None
+    if request.method == "POST" and request.url.path == "/api/jobs":
+        upload_owner = identity_key(request.state.identity)
+        with upload_lock:
+            if upload_owner in active_uploads:
+                return JSONResponse({"detail": "你已有音檔正在上傳，請稍後再試"}, status_code=429)
+            active_uploads.add(upload_owner)
+        try:
+            with db() as connection:
+                active_count = active_jobs_for_owner(connection, request.state.identity["sub"])
+                daily_count = connection.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE owner=? AND created_at>=?",
+                    (request.state.identity["sub"], int(time.time()) - 86400),
+                ).fetchone()[0]
+                pending_count = connection.execute("""SELECT
+                    (SELECT COUNT(*) FROM jobs WHERE status IN ('queued','working')) +
+                    (SELECT COUNT(*) FROM guitar_tasks WHERE status IN ('queued','working'))""").fetchone()[0]
+            if active_count >= MAX_ACTIVE_PER_USER or (not is_admin(request.state.identity) and daily_count >= DAILY_JOB_LIMIT):
+                with upload_lock:
+                    active_uploads.discard(upload_owner)
+                return JSONResponse({"detail": "目前分析或每日額度已滿"}, status_code=429)
+            if pending_count >= MAX_TOTAL_PENDING:
+                with upload_lock:
+                    active_uploads.discard(upload_owner)
+                return JSONResponse({"detail": "目前等候中的歌曲較多，請稍後再加入"}, status_code=429)
+            if (shutil.disk_usage(JOBS).free < MIN_FREE_UPLOAD
+                    or shutil.disk_usage(tempfile.gettempdir()).free < MIN_FREE_UPLOAD):
+                with upload_lock:
+                    active_uploads.discard(upload_owner)
+                return JSONResponse({"detail": "暫存空間不足，請稍後再試"}, status_code=507)
+        except BaseException:
+            with upload_lock:
+                active_uploads.discard(upload_owner)
+            raise
     if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path != "/login":
         origin = request_origin(request)
         if not origin or origin != str(request.base_url).rstrip("/"):
+            if upload_owner:
+                with upload_lock:
+                    active_uploads.discard(upload_owner)
             return JSONResponse({"detail": "來源驗證失敗"}, status_code=403)
-    return await call_next(request)
+    try:
+        return await call_next(request)
+    finally:
+        if upload_owner:
+            with upload_lock:
+                active_uploads.discard(upload_owner)
 
 
 @app.middleware("http")
@@ -473,8 +560,9 @@ def startup() -> None:
         raise RuntimeError("分析沙箱、ffmpeg、ffprobe、Deno 或 yt-dlp 尚未安裝，服務拒絕啟動")
     init_db()
     with db() as connection:
+        connection.execute("UPDATE jobs SET status='cancelled',message='已取消' WHERE status='working' AND cancel_requested=1")
         connection.execute("UPDATE jobs SET status='queued', progress=2, message='服務重啟，已重新加入佇列' WHERE status='working'")
-        pending = connection.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id").fetchall()
+        pending = connection.execute("SELECT * FROM jobs WHERE status='queued' AND cancel_requested=0 ORDER BY created_at, id").fetchall()
     with db() as connection:
         connection.execute("UPDATE guitar_tasks SET status='queued' WHERE status='working'")
         guitar_pending = connection.execute("SELECT job_id,created_at FROM guitar_tasks WHERE status='queued'").fetchall()
@@ -616,8 +704,29 @@ def login(request: Request, username: Annotated[str, Form()], password: Annotate
 
 
 @app.post("/logout")
-def logout() -> Response:
+def logout(request: Request) -> Response:
+    token = request.cookies.get(COOKIE)
+    if token:
+        try:
+            body = token.rsplit(".", 1)[0]
+            payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+            session_id = payload.get("sid")
+            if session_id:
+                with db() as connection:
+                    connection.execute("DELETE FROM login_sessions WHERE token_hash=?",
+                        (hashlib.sha256(session_id.encode()).hexdigest(),))
+        except (ValueError, UnicodeError, TypeError, json.JSONDecodeError):
+            pass
     response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE)
+    return response
+
+
+@app.post("/api/logout-all")
+def logout_all(request: Request) -> Response:
+    with db() as connection:
+        connection.execute("DELETE FROM login_sessions WHERE user_id=?", (identity_key(request.state.identity),))
+    response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE)
     return response
 
@@ -753,6 +862,25 @@ def get_job(request: Request, job_id: str, include_notes: bool = True) -> dict:
     with db() as connection:
         add_queue_metadata(connection, [payload])
     return payload
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(request: Request, job_id: str) -> dict:
+    editable_job(request, job_id)
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row or row["status"] not in {"queued", "working"}:
+            raise HTTPException(409, "這首歌目前不在等候或分析中")
+        if row["status"] == "queued":
+            connection.execute("""UPDATE jobs SET status='cancelled', cancel_requested=1,
+                message='已取消', updated_at=? WHERE id=?""", (int(time.time()), job_id))
+            download_preparation.cancel(job_id)
+            return {"status": "cancelled"}
+        connection.execute("""UPDATE jobs SET cancel_requested=1,
+            message='正在停止：完成目前步驟後取消',updated_at=? WHERE id=?""",
+            (int(time.time()), job_id))
+    return {"status": "working", "cancel_requested": True}
 
 
 def public_summary(row: sqlite3.Row) -> dict:
@@ -1321,6 +1449,7 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str, par
     job_id = row["id"]
     with job_submission_lock:
         with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             task = connection.execute("SELECT * FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
             if task and task["status"] in {"queued", "working"}:
                 if task["engine"] != engine:
@@ -1328,6 +1457,11 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str, par
                 if engine=='chord_review' and json.loads(task['parameters'] or '{}')!=parameters:
                     raise HTTPException(409,'這首歌已有另一個範圍正在重查')
                 return {"status": task["status"]}
+            pending_count = connection.execute("""SELECT
+                (SELECT COUNT(*) FROM jobs WHERE status IN ('queued','working')) +
+                (SELECT COUNT(*) FROM guitar_tasks WHERE status IN ('queued','working'))""").fetchone()[0]
+            if pending_count >= MAX_TOTAL_PENDING:
+                raise HTTPException(429, "目前等候中的歌曲較多，請稍後再加入")
             successful_refresh = bool(task and task['engine']==engine and engine in {'event_verified','chord_review'} and task['status']=='done')
             if task and task["engine"] == engine and task["attempts"] >= 3 and not successful_refresh:
                 raise HTTPException(429, "已重試三次，請聯絡管理員")
@@ -1590,6 +1724,10 @@ def process_guitar_task(job_id: str) -> None:
                     connection.execute("UPDATE jobs SET result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), job_id))
 
 
+class JobCancelled(Exception):
+    pass
+
+
 def update_job(job_id: str, **changes) -> None:
     fields = ("title", "status", "progress", "message", "duration", "note_count", "result", "error_detail")
     allowed = set(fields)
@@ -1600,6 +1738,12 @@ def update_job(job_id: str, **changes) -> None:
         values.extend((int(field in changes), changes.get(field)))
     values.extend((int(time.time()), job_id))
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT status,cancel_requested FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row and changes.get("status") != "cancelled" and (
+            row["status"] == "cancelled" or row["cancel_requested"] and row["status"] in {"queued", "working"}
+        ):
+            raise JobCancelled()
         connection.execute(
             """
             UPDATE jobs SET
@@ -1660,6 +1804,33 @@ def safe_title(value: str) -> str:
     return cleaned[:120] or "未命名分析"
 
 
+def stage_cache(job_id: str, source: str, options: dict | None = None) -> StageCache:
+    tracked = [Path(__file__), ROOT / "tools/basic_pitch_worker.py",
+               ROOT / "tools/chordino_worker.py", ROOT / "tools/lyrics_worker.py",
+               ROOT / "tools/rhythm_worker.py", ROOT / "tools/guitar_worker.py",
+               ROOT / "tools/btc_worker.py", ROOT / "uv.lock", FFMPEG,
+               YTDLP, DENO, BTC_MODEL, VAMP_PATH / "nnls-chroma.so"]
+    versions = []
+    for path in tracked:
+        try:
+            stat = path.stat()
+            versions.append((str(path.relative_to(ROOT)), stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            versions.append((str(path), None, None))
+    payload = json.dumps({"revision": 1, "source": source, "options": options or {},
+                          "versions": versions}, sort_keys=True, ensure_ascii=False)
+    return StageCache(JOBS / job_id, hashlib.sha256(payload.encode()).hexdigest())
+
+
+def safe_job_relative(directory: Path, value: object) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    candidate = directory / value
+    if candidate.resolve(strict=False).is_relative_to(directory.resolve(strict=False)):
+        return candidate
+    return None
+
+
 @app.post("/api/jobs", status_code=202)
 async def create_job(
     request: Request,
@@ -1701,7 +1872,7 @@ async def create_job(
                     size += len(chunk)
                     if size > MAX_UPLOAD:
                         raise HTTPException(413, "檔案超過大小限制")
-                    target.write(chunk)
+                    await run_in_threadpool(target.write, chunk)
             incoming.chmod(0o600)
             await run_in_threadpool(validate_uploaded_media, incoming)
         except HTTPException:
@@ -1756,6 +1927,13 @@ async def create_job(
     now = int(time.time())
     with job_submission_lock:
         with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            pending_count = connection.execute("""SELECT
+                (SELECT COUNT(*) FROM jobs WHERE status IN ('queued','working')) +
+                (SELECT COUNT(*) FROM guitar_tasks WHERE status IN ('queued','working'))""").fetchone()[0]
+            if pending_count >= MAX_TOTAL_PENDING:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise HTTPException(429, "目前等候中的歌曲較多，請稍後再加入")
             active_count = active_jobs_for_owner(connection, owner)
             if active_count >= MAX_ACTIVE_PER_USER:
                 shutil.rmtree(job_dir, ignore_errors=True)
@@ -1819,6 +1997,9 @@ def sandbox_command(command: list[str], allow_network: bool) -> list[str]:
         arguments.extend(("--tmpfs", str(runtime)))
     if STORAGE_MOUNT and STORAGE_MOUNT.is_dir():
         arguments.extend(("--tmpfs", str(STORAGE_MOUNT)))
+    backup_mount = Path("/mnt/sdc")
+    if backup_mount.is_dir():
+        arguments.extend(("--tmpfs", str(backup_mount)))
     mounted_jobs: set[Path] = set()
     readonly_jobs: set[Path] = set()
     jobs_root = JOBS.resolve()
@@ -2000,6 +2181,8 @@ def download_url(job_id: str, url: str, directory: Path) -> tuple[Path, str]:
 def schedule_download(job_id: str, url: str) -> None:
     # Optional prefetch. Saturated preparation falls back to the existing queue,
     # without rejecting a valid submitted analysis or accumulating unlimited RAM.
+    if stage_cache(job_id, url).read("download"):
+        return
     download_preparation.submit(job_id, download_url, job_id, url, JOBS / job_id)
 
 
@@ -2209,19 +2392,57 @@ def process_job(
     review_guitar: bool = False,
 ) -> None:
     directory = JOBS / job_id
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        claimed = connection.execute("""UPDATE jobs SET status='working',updated_at=?
+            WHERE id=? AND status='queued' AND cancel_requested=0""",
+            (int(time.time()), job_id)).rowcount
+    if not claimed:
+        return
+    options = dict(source_kind=source_kind, separate_stems=separate_stems,
+                   separation_model=separation_model, stem_midi=stem_midi,
+                   lyrics_requested=lyrics_requested, pure_guitar=pure_guitar,
+                   review_guitar=review_guitar, btc_enabled=BTC_ENABLED,
+                   whisper_model=os.getenv("CHORDLAB_WHISPER_MODEL", "small"))
+    cache = stage_cache(job_id, source_detail, options)
     try:
         update_job(job_id, status="working", progress=5, message="準備音訊")
         if source_kind == "url":
             prepared = download_preparation.take(job_id)
-            source, _title = prepared.result() if prepared is not None else download_url(job_id, source_detail, directory)
+            download_cache = stage_cache(job_id, source_detail)
+            saved_download = download_cache.read("download") if prepared is None else None
+            saved_source = safe_job_relative(directory, saved_download.get("source")) if saved_download else None
+            if saved_source and saved_source.is_file():
+                source = saved_source
+            else:
+                source, title = prepared.result() if prepared is not None else download_url(job_id, source_detail, directory)
+                download_cache.save("download", [source], {"source": str(source.relative_to(directory)), "title": title})
         else:
             source = next(directory.glob("source.*"))
         audio = directory / "audio.wav"
         update_job(job_id, progress=25, message="轉換成分析格式")
-        duration = normalize_audio(source, audio)
+        normalized = cache.read("normalize")
+        if normalized and isinstance(normalized.get("duration"), (int, float)) and 1 <= normalized["duration"] <= MAX_DURATION:
+            duration = float(normalized["duration"])
+        else:
+            duration = normalize_audio(source, audio)
+            cache.save("normalize", [source, audio], {"duration": duration})
         if separate_stems:
-            with heavy_analysis_slot:
-                analysis_audio, stem_names = separate_audio(job_id, source, directory, separation_model)
+            separated = cache.read("separate")
+            saved_analysis = safe_job_relative(directory, separated.get("analysis_audio")) if separated else None
+            expected_stems = {"original", "vocals", "bass", "drums", "other", "guitar", "piano", "harmony"}
+            if not (saved_analysis and saved_analysis.is_file() and isinstance(separated.get("stem_names"), list)
+                    and set(separated["stem_names"]).issubset(expected_stems)
+                    and {"original", "harmony" if separation_model == "htdemucs_6s" else "other"}.issubset(separated["stem_names"])):
+                separated = None
+            if separated:
+                analysis_audio = saved_analysis
+                stem_names = separated["stem_names"]
+            else:
+                with heavy_analysis_slot:
+                    analysis_audio, stem_names = separate_audio(job_id, source, directory, separation_model)
+                cache.save("separate", [source, *[directory / "stems" / f"{name}.wav" for name in stem_names if name != "original"]],
+                           {"analysis_audio": str(analysis_audio.relative_to(directory)), "stem_names": stem_names})
             analysis_stem = "harmony" if separation_model == "htdemucs_6s" else "other"
         else:
             analysis_audio, stem_names, analysis_stem = audio, ["original"], "original"
@@ -2233,8 +2454,12 @@ def process_job(
         if lyrics_requested:
             lyrics_audio = directory / "stems" / "vocals.wav" if separate_stems else audio
             try:
-                with heavy_analysis_slot:
-                    lyrics = transcribe_lyrics(job_id, lyrics_audio, directory)
+                if cache.read("lyrics") is not None:
+                    lyrics = json.loads((directory / "lyrics.json").read_text(encoding="utf-8"))
+                else:
+                    with heavy_analysis_slot:
+                        lyrics = transcribe_lyrics(job_id, lyrics_audio, directory)
+                    cache.save("lyrics", [lyrics_audio, directory / "lyrics.json"])
             except Exception as exc:
                 log_job_error(job_id, "lyrics", exc)
                 lyrics_error = "歌詞辨識失敗"
@@ -2243,29 +2468,47 @@ def process_job(
         update_job(job_id, duration=duration, progress=basic_progress, message="Basic Pitch 辨識音符")
         basic_output = directory / "basic_pitch.json"
         midi_output = directory / "transcription.mid"
-        run_command([str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(analysis_audio), str(basic_output), str(midi_output)], timeout=1800)
+        if cache.read("basic") is None:
+            run_command([str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(analysis_audio), str(basic_output), str(midi_output)], timeout=1800)
+            cache.save("basic", [analysis_audio, basic_output, midi_output])
         basic = json.loads(basic_output.read_text(encoding="utf-8"))
         midi_stems: list[str] = []
         midi_errors: dict[str, str] = {}
-        if pure_guitar and not review_guitar:
-            # Decode/normalize once with FFmpeg. Basic Pitch cannot reliably
-            # read yt-dlp WebM/Opus containers directly inside the sandbox.
-            midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory, direct_source=audio)
+        midi_cached = cache.read("stem-midi")
+        if (midi_cached is not None and isinstance(midi_cached.get("stems"), list)
+                and isinstance(midi_cached.get("errors"), dict)):
+            midi_stems = midi_cached["stems"]
+            midi_errors = midi_cached["errors"]
             chordino_progress = 94
-        elif pure_guitar:
-            pass  # Respect preview-first mode for an original guitar recording too.
-        elif separate_stems and stem_midi:
-            midi_names = [name for name in stem_names if not (review_guitar and name == "guitar")]
-            midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, midi_names, analysis_stem, midi_output)
-            chordino_progress = 94
-        elif separate_stems and separation_model == "htdemucs_6s" and "guitar" in stem_names and not review_guitar:
-            midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory)
-            chordino_progress = 94
+        else:
+            if pure_guitar and not review_guitar:
+                # Decode/normalize once with FFmpeg. Basic Pitch cannot reliably
+                # read yt-dlp WebM/Opus containers directly inside the sandbox.
+                midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory, direct_source=audio)
+                chordino_progress = 94
+            elif pure_guitar:
+                pass  # Respect preview-first mode for an original guitar recording too.
+            elif separate_stems and stem_midi:
+                midi_names = [name for name in stem_names if not (review_guitar and name == "guitar")]
+                midi_stems, midi_errors = transcribe_stem_midis(job_id, directory, midi_names, analysis_stem, midi_output)
+                chordino_progress = 94
+            elif separate_stems and separation_model == "htdemucs_6s" and "guitar" in stem_names and not review_guitar:
+                midi_stems, midi_errors = transcribe_guitar_tab(job_id, directory)
+                chordino_progress = 94
+            if midi_stems and not midi_errors:
+                artifacts = [analysis_audio]
+                for stem in midi_stems:
+                    artifacts.append(directory / "stem-midi" / f"{stem}.mid")
+                    if stem != analysis_stem:
+                        artifacts.append(directory / "stem-midi" / f"{stem}.json")
+                cache.save("stem-midi", artifacts, {"stems": midi_stems, "errors": midi_errors})
         update_job(job_id, note_count=basic.get("note_count", 0), progress=chordino_progress, message="Chordino 辨識和弦與分析 Key")
         chordino_output = directory / "chordino.json"
         chordino_env = {"VAMP_PATH": str(VAMP_PATH)}
         try:
-            run_command([str(CHORDINO_PYTHON), str(ROOT / "tools" / "chordino_worker.py"), str(analysis_audio), str(chordino_output)], env=chordino_env, timeout=1200)
+            if cache.read("chordino") is None:
+                run_command([str(CHORDINO_PYTHON), str(ROOT / "tools" / "chordino_worker.py"), str(analysis_audio), str(chordino_output)], env=chordino_env, timeout=1200)
+                cache.save("chordino", [analysis_audio, chordino_output])
             chordino = json.loads(chordino_output.read_text(encoding="utf-8"))
             chordino_chords = chordino["chords"]
             chordino_error = None
@@ -2281,8 +2524,10 @@ def process_job(
             update_job(job_id, progress=96, message="雙引擎比對和弦")
             try:
                 btc_output = directory / "btc.json"
-                with heavy_analysis_slot:
-                    run_command([str(BTC_PYTHON), str(ROOT / "tools/btc_worker.py"), str(analysis_audio), str(btc_output)], timeout=600)
+                if cache.read("btc") is None:
+                    with heavy_analysis_slot:
+                        run_command([str(BTC_PYTHON), str(ROOT / "tools/btc_worker.py"), str(analysis_audio), str(btc_output)], timeout=600)
+                    cache.save("btc", [analysis_audio, btc_output])
                 btc = json.loads(btc_output.read_text(encoding="utf-8"))
                 if btc.get("chords") and chordino_chords:
                     comparison = compare_chords(chordino_chords, btc["chords"], duration)
@@ -2295,7 +2540,9 @@ def process_job(
         try:
             rhythm_output = directory / "rhythm.json"
             rhythm_audio = directory / "stems" / "drums.wav" if "drums" in stem_names else audio
-            run_command([str(BASIC_PYTHON), str(ROOT / "tools" / "rhythm_worker.py"), str(rhythm_audio), str(rhythm_output)], timeout=300)
+            if cache.read("rhythm") is None:
+                run_command([str(BASIC_PYTHON), str(ROOT / "tools" / "rhythm_worker.py"), str(rhythm_audio), str(rhythm_output)], timeout=300)
+                cache.save("rhythm", [rhythm_audio, rhythm_output])
             rhythm = json.loads(rhythm_output.read_text(encoding="utf-8"))
         except Exception as exc:
             log_job_error(job_id, "rhythm", exc)
@@ -2331,15 +2578,20 @@ def process_job(
             },
         }
         update_job(job_id, status="done", progress=100, message="分析完成", result=json.dumps(result, ensure_ascii=False), error_detail=None)
+    except JobCancelled:
+        update_job(job_id, status="cancelled", message="已取消", progress=0)
     except Exception as exc:
         log_job_error(job_id, "pipeline", exc)
-        update_job(
-            job_id,
-            status="failed",
-            message="分析失敗，請稍後再試或更換音訊來源。管理員可在管理頁查看詳細原因。",
-            error_detail=str(exc)[-3000:],
-            progress=100,
-        )
+        try:
+            update_job(
+                job_id,
+                status="failed",
+                message="分析失敗，請稍後再試或更換音訊來源。管理員可在管理頁查看詳細原因。",
+                error_detail=str(exc)[-3000:],
+                progress=100,
+            )
+        except JobCancelled:
+            update_job(job_id, status="cancelled", message="已取消", progress=0)
 
 
 class ChordSegment(BaseModel):
@@ -2352,6 +2604,7 @@ class ChordSegment(BaseModel):
 class ChordUpdate(BaseModel):
     method: str
     chords: list[ChordSegment]
+    revision: int = Field(ge=0)
 
 
 @app.put("/api/jobs/{job_id}/chords")
@@ -2376,6 +2629,13 @@ def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
         result = json.loads(latest["result"])
         if update.method not in result.get("methods", {}):
             raise HTTPException(400, "這首歌沒有這種分析結果")
+        revisions = result.setdefault("chord_revisions", {})
+        current_revision = int(revisions.get(update.method, 0))
+        if update.revision != current_revision:
+            raise HTTPException(409, "這首歌在其他分頁已有新修正，請重新開啟後再編輯")
+        connection.execute("""INSERT INTO chord_edits(job_id,method,revision,actor,chords,created_at)
+            VALUES (?,?,?,?,?,?)""", (job_id, update.method, current_revision,
+            request.state.identity["sub"], json.dumps(result["methods"][update.method], ensure_ascii=False), int(time.time())))
         previous = {(s["start"], s["end"], s["chord"]): s for s in result["methods"][update.method]}
         if update.method in {"chord_v2", "cross_verified", "event_verified",'local_review'}:
             for segment in chords:
@@ -2399,10 +2659,63 @@ def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
             result["chord_comparison"]["review_segments"] = sum(
                 s.get("comparison", {}).get("status") in {"detail", "conflict", "mixed"} for s in chords)
         result["methods"][update.method] = chords
+        revisions[update.method] = current_revision + 1
         result["active_method"] = update.method
         result["key"] = detect_key(chords)
         connection.execute("UPDATE jobs SET result=?,message='已儲存人工修正',updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
-    return {"ok": True}
+    return {"ok": True, "revision": current_revision + 1}
+
+
+@app.get("/api/jobs/{job_id}/chords/history")
+def chord_history(request: Request, job_id: str, method: str) -> dict:
+    row = editable_job(request, job_id)
+    result = json.loads(row["result"] or "{}")
+    if method not in result.get("methods", {}):
+        raise HTTPException(400, "這首歌沒有這種分析結果")
+    with db() as connection:
+        history = connection.execute("""SELECT revision,actor,created_at FROM chord_edits
+            WHERE job_id=? AND method=? ORDER BY revision DESC LIMIT 30""", (job_id, method)).fetchall()
+    return {"revision": int(result.get("chord_revisions", {}).get(method, 0)),
+            "history": [dict(entry) for entry in history]}
+
+
+class ChordRestore(BaseModel):
+    method: str
+    revision: int = Field(ge=0)
+    restore_revision: int = Field(ge=0)
+
+
+@app.post("/api/jobs/{job_id}/chords/restore")
+def restore_chords(request: Request, job_id: str, update: ChordRestore) -> dict:
+    editable_job(request, job_id)
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        snapshot = connection.execute("""SELECT chords FROM chord_edits
+            WHERE job_id=? AND method=? AND revision=?""",
+            (job_id, update.method, update.restore_revision)).fetchone()
+        if not snapshot:
+            raise HTTPException(404, "找不到這個和弦版本")
+        latest = connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not latest or not latest["result"]:
+            raise HTTPException(404, "找不到可編輯結果")
+        result = json.loads(latest["result"])
+        if update.method not in result.get("methods", {}):
+            raise HTTPException(400, "這首歌沒有這種分析結果")
+        revisions = result.setdefault("chord_revisions", {})
+        current_revision = int(revisions.get(update.method, 0))
+        if update.revision != current_revision:
+            raise HTTPException(409, "這首歌在其他分頁已有新修正，請重新開啟後再編輯")
+        connection.execute("""INSERT INTO chord_edits(job_id,method,revision,actor,chords,created_at)
+            VALUES (?,?,?,?,?,?)""", (job_id, update.method, current_revision,
+            request.state.identity["sub"], json.dumps(result["methods"][update.method], ensure_ascii=False), int(time.time())))
+        restored = json.loads(snapshot["chords"])
+        result["methods"][update.method] = restored
+        revisions[update.method] = current_revision + 1
+        result["active_method"] = update.method
+        result["key"] = detect_key(restored)
+        connection.execute("UPDATE jobs SET result=?,message='已復原和弦版本',updated_at=? WHERE id=?",
+                           (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
+    return {"ok": True, "revision": current_revision + 1}
 
 
 def job_file(job_id: str, filename: str) -> Path:
@@ -2437,13 +2750,27 @@ async def audio_mix(
     cached = JOBS / job_id / "mixes" / f"{mix_key}.m4a"
     if cached.is_file():
         return FileResponse(cached, media_type="audio/mp4")
+    request_key = f"{job_id}:{mix_key}"
+    with mix_requests_lock:
+        task = mix_requests.get(request_key)
+        if task is None:
+            task = asyncio.create_task(light_tasks.run(build_audio_mix, job_id, selected))
+            mix_requests[request_key] = task
+
+            def clear_finished(_):
+                with mix_requests_lock:
+                    if mix_requests.get(request_key) is task:
+                        mix_requests.pop(request_key, None)
+
+            task.add_done_callback(clear_finished)
     try:
-        return await light_tasks.run(build_audio_mix, job_id, selected)
+        output = await asyncio.shield(task)
+        return output if isinstance(output, FileResponse) else FileResponse(output, media_type="audio/mp4")
     except PoolBusy as exc:
         raise HTTPException(429, str(exc)) from exc
 
 
-def build_audio_mix(job_id: str, selected: list[str]) -> FileResponse:
+def build_audio_mix(job_id: str, selected: list[str]) -> Path:
 
     sources = [
         job_file(job_id, "audio.wav" if track == "original" else f"stems/{track}.wav")
@@ -2453,7 +2780,13 @@ def build_audio_mix(job_id: str, selected: list[str]) -> FileResponse:
     mixes = JOBS / job_id / "mixes"
     output = mixes / f"{mix_key}.m4a"
     if not output.is_file():
+        lock_key = f"{job_id}:{mix_key}"
         with mix_generation_lock:
+            key_lock = mix_key_locks.get(lock_key)
+            if key_lock is None:
+                key_lock = threading.Lock()
+                mix_key_locks[lock_key] = key_lock
+        with key_lock:
             if not output.is_file():
                 mixes.mkdir(mode=0o700, exist_ok=True)
                 if sum(1 for path in mixes.glob("*.m4a") if path.is_file()) >= 64:
@@ -2474,7 +2807,7 @@ def build_audio_mix(job_id: str, selected: list[str]) -> FileResponse:
                     temporary.replace(output)
                 finally:
                     temporary.unlink(missing_ok=True)
-    return FileResponse(output, media_type="audio/mp4")
+    return output
 
 
 @app.get("/api/jobs/{job_id}/guitar-preview")
