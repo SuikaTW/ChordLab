@@ -1,6 +1,14 @@
 import "../app/static/tab-engine.js";
 
 const { assign } = globalThis.ChordLabTab;
+Deno.test("hybrid alternatives remain soft and reject impossible pitch hints", () => {
+  const source = [{ ...note(64), model_string: 3, model_fret: 9, fingering_score: .9,
+    fingering_candidates: [{ string: 3, fret: 9, score: .9 }, { string: 5, fret: 0, score: .88 },
+      { string: 0, fret: 0, score: 1 }] }];
+  const result = assign(source, { useModelFingering: true });
+  assert(result.notes[0].string === 5, "Nearly equal evidence permits an easier position");
+  playable(result);
+});
 Deno.test("model string anchors are soft, pitch-checked and tuning/capo aware", () => {
   const source = [{ ...note(64), model_string: 3, model_fret: 9, fingering_score: .99 }];
   assert(assign(source, { useModelFingering: true }).notes[0].string === 3, "Use valid string evidence");

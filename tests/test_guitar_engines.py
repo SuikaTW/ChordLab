@@ -119,6 +119,80 @@ class GuitarEngineTests(unittest.TestCase):
             connection.execute("UPDATE jobs SET is_public=0")
         self.assertEqual(self.client.get("/api/jobs/song/notes/guitar?engine=gaps").status_code, 404)
 
+    def test_hybrid_completion_preserves_original_and_passes_cached_gaps(self):
+        paths(self.directory, "gaps")[0].write_text('{"notes": []}')
+        self.assertEqual(self.post("hybrid").status_code, 202)
+        original = paths(self.directory, "basic_pitch")[0].read_bytes()
+        def fake_command(command, **kwargs):
+            self.assertIn("--gaps-cache", command)
+            self.assertIn("hybrid", command)
+            Path(command[3]).write_text(json.dumps({"profile": "guitar_hybrid_v2", "notes": [{"start": 0, "end": .5, "midi": 64}]}))
+            Path(command[4]).write_bytes(b"MThd")
+        with patch.object(main, "run_command", side_effect=fake_command):
+            main.process_guitar_task("song")
+        self.assertEqual(paths(self.directory, "basic_pitch")[0].read_bytes(), original)
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=hybrid").json()["status"], "done")
+
+    def test_chord_refinement_durable_shared_queue_and_preserved_manual_edits(self):
+        (self.directory / "chordino.json").write_text(json.dumps({"chords": self.baseline["methods"]["chordino"]}))
+        response = self.client.post("/api/jobs/song/chord-refinement", headers={"Origin": "http://testserver"})
+        self.assertEqual(response.json()["status"], "queued")
+        self.assertEqual(self.post("hybrid").status_code, 409)
+        def fake_command(command, **kwargs):
+            self.assertIn("harmony_worker.py", command[1])
+            Path(command[4]).write_text(json.dumps({"summary": {"version": 2},
+                "chords": [{"start": 0, "end": 10, "chord": "Am"}]}))
+            with main.db() as connection:
+                result = {**self.baseline, "active_method": "chordino", "key": {"label": "user key"},
+                    "methods": {"chordino": [{"start": 0, "end": 10, "chord": "F", "manual": True}]}}
+                connection.execute("UPDATE jobs SET result=?", (json.dumps(result),))
+        with patch.object(main, "run_command", side_effect=fake_command):
+            main.process_guitar_task("song")
+        with main.db() as connection:
+            result = json.loads(connection.execute("SELECT result FROM jobs").fetchone()[0])
+        self.assertEqual(result["methods"]["chordino"][0]["chord"], "F")
+        self.assertEqual(result["active_method"], "chordino")
+        self.assertEqual(result["key"]["label"], "user key")
+        self.assertEqual(result["methods"]["chord_v2"][0]["chord"], "Am")
+        self.assertEqual(self.client.get("/api/jobs/song/chord-refinement").json()["status"], "done")
+        refined = [{"start": 0, "end": 10, "chord": "Dm"}]
+        saved = self.client.put("/api/jobs/song/chords", headers={"Origin": "http://testserver"},
+            json={"method": "chord_v2", "chords": refined})
+        self.assertEqual(saved.status_code, 200)
+        with main.db() as connection:
+            saved_result = json.loads(connection.execute("SELECT result FROM jobs").fetchone()[0])
+        self.assertTrue(saved_result["methods"]["chord_v2"][0]["manual"])
+        self.assertEqual(saved_result["methods"]["chordino"][0]["chord"], "F")
+        before = main.executor.submit.call_count
+        self.assertEqual(self.client.post("/api/jobs/song/chord-refinement", headers={"Origin": "http://testserver"}).json()["status"], "done")
+        self.assertEqual(main.executor.submit.call_count, before)
+
+    def test_chord_refinement_failure_is_nonfatal_and_permissions_apply(self):
+        (self.directory / "chordino.json").write_text('{"chords": [{"chord":"C"}]}')
+        self.assertEqual(self.client.post("/api/jobs/song/chord-refinement").status_code, 403)
+        self.client.post("/api/jobs/song/chord-refinement", headers={"Origin": "http://testserver"})
+        with patch.object(main, "run_command", side_effect=RuntimeError("refinement failure")):
+            main.process_guitar_task("song")
+        self.assertEqual(self.client.get("/api/jobs/song/chord-refinement").json()["status"], "failed")
+        self.post("gaps")
+        self.assertEqual(self.client.get("/api/jobs/song/chord-refinement").json()["status"], "failed")
+        self.assertEqual(self.client.get("/api/jobs/song").json()["status"], "done")
+        self.client.cookies.set(main.COOKIE, main.sign_session("bob@example.com", "google", int(time.time()) + 3600))
+        self.assertEqual(self.client.post("/api/jobs/song/chord-refinement", headers={"Origin": "http://testserver"}).status_code, 404)
+
+    def test_chord_refinement_restart_and_shared_quota(self):
+        with patch.object(main, "DAILY_JOB_LIMIT", 1):
+            self.client.post("/api/jobs/song/chord-refinement", headers={"Origin": "http://testserver"})
+            with main.db() as connection:
+                connection.execute("UPDATE guitar_tasks SET status='working'")
+            with patch.object(main, "USERNAME", "test"), patch.object(main, "PASSWORD", "test"), patch.object(main, "STORAGE_MOUNT", None):
+                main.startup()
+            with main.db() as connection:
+                task = connection.execute("SELECT engine,status FROM guitar_tasks").fetchone()
+                self.assertEqual(tuple(task), ("chord_v2", "queued"))
+                connection.execute("UPDATE guitar_tasks SET status='failed'")
+            self.assertEqual(self.post("hybrid").status_code, 429)
+
 
 if __name__ == "__main__":
     unittest.main()

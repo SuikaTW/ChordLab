@@ -29,7 +29,7 @@ def run():
     with httpx.Client(base_url=base, cookies={main.COOKIE: token}, timeout=30) as client:
         before = client.get(f"/api/jobs/{args.job}?include_notes=false").json()
         assert before["pure_guitar"]
-        for engine in ("gaps", "tabcnn"):
+        for engine in ("gaps", "tabcnn", "hybrid"):
             if args.generate:
                 response = client.post(f"/api/jobs/{args.job}/guitar-analysis?engine={engine}", headers={"Origin": base})
                 assert response.status_code == 202, response.text
@@ -69,7 +69,7 @@ def run():
             page.locator(f'[data-job="{args.job}"]').click()
             page.locator('[data-result-view="tab"]').click()
             page.locator("#continuousTab .tab-system").first.wait_for(state="visible")
-            for engine in ("gaps", "tabcnn", "basic_pitch", "gaps"):
+            for engine in ("gaps", "tabcnn", "hybrid", "basic_pitch", "gaps"):
                 page.locator("#tabEngine").select_option(engine)
                 page.wait_for_function("engine => state.tabEngine === engine && state.tabSource === 'guitar' && state.tabProfile.includes(engine === 'basic_pitch' ? 'guitar_v2' : engine)", arg=engine)
                 page.locator("#continuousTab .tab-system").first.wait_for(state="visible")
@@ -84,6 +84,26 @@ def run():
             assert not errors, errors
             page.screenshot(path=f"/tmp/chordlab-guitar-engines-{name}.png", full_page=True)
             print(name, "switching, rapid switching, layout and MIDI controls passed", flush=True)
+            busy = {"calls": 0}
+            def shared_task(route):
+                response = route.fetch()
+                payload = response.json()
+                busy["calls"] += 1
+                payload["busy_engine"] = "chord_v2" if busy["calls"] == 1 else None
+                route.fulfill(response=response, json=payload)
+            page.route(f"**/api/jobs/{args.job}/guitar-analysis?engine=hybrid", shared_task)
+            page.locator("#tabEngine").select_option("hybrid")
+            page.wait_for_function("() => state.tabEngine === 'hybrid' && state.tabProfile === 'guitar_hybrid_v2' && TabStudio.inspect().count > 0")
+            page.locator(".tab-options summary").click()
+            page.locator("#tabBpm").fill("141")
+            page.locator("#tabBpm").dispatch_event("change")
+            assert page.evaluate("TabStudio.inspect().dirty")
+            page.wait_for_timeout(3200)
+            assert busy["calls"] >= 2
+            assert page.evaluate("TabStudio.inspect().dirty"), "Background completion discarded unsaved TAB changes"
+            assert page.locator("#tabBpm").input_value() == "141"
+            assert not errors, errors
+            print(name, "unsaved TAB survives shared-analysis completion (mock status)", flush=True)
             context.close()
         browser.close()
 

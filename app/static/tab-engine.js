@@ -110,8 +110,16 @@
               Number.isInteger(note.model_fret) && note.model_fret >= 0 && note.model_fret <= 19 &&
               tuning[note.model_string] + note.model_fret === note.midi;
             // A soft anchor, not a guarantee of the original performer's choice.
-            const hintCost = validHint && string !== note.model_string ?
-              3 * Math.max(0, Math.min(1, Number(note.fingering_score) || 0)) : 0;
+            const alternatives = validHint && Array.isArray(note.fingering_candidates) ?
+              note.fingering_candidates.filter((item) => Number.isInteger(item.string) &&
+                item.string >= 0 && item.string < 6 && Number.isInteger(item.fret) &&
+                item.fret >= 0 && item.fret <= 19 && tuning[item.string] + item.fret === note.midi &&
+                Number.isFinite(item.score) && item.score >= 0 && item.score <= 1) : [];
+            const support = alternatives.find((item) => item.string === string)?.score || 0;
+            const hintCost = alternatives.length ?
+              3 * (Math.max(...alternatives.map((item) => item.score)) - support) :
+              validHint && string !== note.model_string ?
+                3 * Math.max(0, Math.min(1, Number(note.fingering_score) || 0)) : 0;
             const cost = candidate.cost + fret * .025 + movement + crossing * 3 +
               preference + hintCost + spanCost(placed) - spanCost(candidate.placed) +
               (overlap && old.midi !== note.midi ? .7 : 0);

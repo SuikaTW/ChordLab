@@ -207,6 +207,7 @@ function bindEvents() {
   $$(".method-switch button").forEach((button) =>
     button.addEventListener("click", () => switchMethod(button.dataset.method))
   );
+  $("#buildChordV2").addEventListener("click", buildChordRefinement);
   $("#capoSelect").addEventListener("change", (event) => {
     if (!TabStudio.reconfigure()) return;
     state.capo = Number(event.target.value);
@@ -443,6 +444,8 @@ async function openJob(id, isPublic = false, reveal = false) {
   $("#tabEngine").value = "basic_pitch";
   TabStudio.reset(id);
   const requestId = ++state.openRequest;
+  clearTimeout(state.chordRefinementTimer);
+  $("#buildChordV2").classList.add("hidden");
   clearInterval(state.poller);
   state.poller = null;
   clearMixer();
@@ -477,6 +480,7 @@ async function openJob(id, isPublic = false, reveal = false) {
     state.resultView = "chords";
     syncCurrentJob();
     renderWorkspace();
+    if (job.status === "done") refreshChordRefinement(id, requestId);
     setResultView("chords");
     setPage("workspace");
     if (reveal) revealWorkspaceOnMobile();
@@ -501,6 +505,7 @@ async function openJob(id, isPublic = false, reveal = false) {
             state.track = update.result?.separation?.analysis_stem || "original";
             state.tracks = [state.track];
             renderWorkspace();
+            if (update.status === "done") refreshChordRefinement(id, requestId);
             await loadJobs();
           }
         } catch (error) {
@@ -562,6 +567,15 @@ function renderWorkspace() {
     }軌分離，再執行音符、和弦與 Key 分析。`
     : "伺服器會依序完成音訊轉換、Basic Pitch 音符辨識、Chordino 和弦與 Key 分析。";
   if (state.current.status === "done") {
+    let v2Button = $("[data-method='chord_v2']");
+    if (!v2Button) {
+      v2Button = document.createElement("button");
+      v2Button.dataset.method = "chord_v2";
+      v2Button.textContent = "和弦 v2（實驗）";
+      v2Button.addEventListener("click", () => switchMethod("chord_v2"));
+      $(".method-switch").append(v2Button);
+    }
+    v2Button.classList.toggle("hidden", !state.current.result.methods.chord_v2?.length);
     $("[data-method='ensemble']").classList.toggle("hidden", !state.current.result.methods.ensemble?.length);
     if (!state.current.result.methods[state.method]?.length) {
       state.method = state.current.result.methods.chordino.length ? "chordino" : "basic_pitch";
@@ -968,7 +982,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=5");
+    const worker = new Worker("/static/tab-worker.js?v=6");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
@@ -1004,7 +1018,7 @@ function assignTabNotes(notes) {
         capo: state.capo,
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
-        useModelFingering: state.tabEngine === "tabcnn" && $("#tabFingering").value === "model",
+        useModelFingering: ["tabcnn", "hybrid"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });
   });
@@ -1069,6 +1083,43 @@ function updateLyrics() {
   }
 }
 
+async function refreshChordRefinement(id, requestId = state.openRequest) {
+  try {
+    const info = await api(`/api/jobs/${id}/chord-refinement`);
+    if (state.current?.id !== id || state.openRequest !== requestId) return;
+    const button = $("#buildChordV2");
+    const working = ["queued", "working"].includes(info.status);
+    button.classList.toggle("hidden", info.ready || !(state.current.mine || state.viewer?.admin) || !info.available);
+    button.disabled = working || !!info.busy_engine;
+    button.textContent = working ? (info.status === "queued" ? "和弦 v2 排隊中…" : "和弦 v2 分析中…") :
+      info.busy_engine ? "等待其他進階分析完成…" : info.status === "failed" ? "重試和弦 v2（實驗）" : "分析和弦 v2（實驗）";
+    if (info.ready && !state.current.result.methods.chord_v2?.length) {
+      const job = await api(`/api/jobs/${id}?include_notes=false`);
+      if (state.current?.id !== id || state.openRequest !== requestId) return;
+      state.current = job;
+      renderWorkspace();
+    }
+    clearTimeout(state.chordRefinementTimer);
+    if (working || info.busy_engine) state.chordRefinementTimer = setTimeout(() => refreshChordRefinement(id, requestId), 2500);
+  } catch (error) {
+    if (state.current?.id === id && state.openRequest === requestId) toast(error.message, true);
+  }
+}
+
+async function buildChordRefinement() {
+  const id = state.current?.id, requestId = state.openRequest;
+  if (!id || $("#buildChordV2").disabled) return;
+  $("#buildChordV2").disabled = true;
+  try {
+    await api(`/api/jobs/${id}/chord-refinement`, { method: "POST" });
+    if (state.current?.id !== id || state.openRequest !== requestId) return;
+    toast("已加入和弦 v2 分析佇列，原版不會被改動");
+  } catch (error) {
+    if (state.current?.id === id && state.openRequest === requestId) toast(error.message, true);
+  }
+  if (state.current?.id === id && state.openRequest === requestId) refreshChordRefinement(id, requestId);
+}
+
 function switchMethod(method, announce = true) {
   if (!state.current?.result) return;
   if (!state.current.result.methods[method]?.length) {
@@ -1083,18 +1134,21 @@ function switchMethod(method, announce = true) {
   );
   renderTimeline();
   renderEditor();
-  if (announce) toast(`已切換到${method === "ensemble" ? "雙引擎比對" : method === "chordino" ? "原本辨識" : "音符推算"}`);
+  if (announce) toast(`已切換到${method === "chord_v2" ? "和弦 v2（實驗）" : method === "ensemble" ? "雙引擎比對" : method === "chordino" ? "原本辨識" : "音符推算"}`);
 }
 
 function needsReview(segment) {
-  return segment.comparison && !["agree", "unavailable"].includes(segment.comparison.status);
+  return segment.refinement?.uncertain || segment.comparison && !["agree", "unavailable"].includes(segment.comparison.status);
 }
 function chords() {
   return state.current?.result?.methods?.[state.method] || [];
 }
 function renderTimeline() {
   const summary = $("#comparisonSummary");
-  summary.classList.toggle("hidden", state.method !== "ensemble");
+  summary.classList.toggle("hidden", !["ensemble", "chord_v2"].includes(state.method));
+  if (state.method === "chord_v2") {
+    summary.textContent = "實驗版 · 分開檢查低音與和弦音，再依前後段落判斷；仍可能誤判，原版已保留。";
+  }
   if (state.method === "ensemble") {
     const count = chords().filter(needsReview).length;
     summary.textContent = count ? `${count} 段有不同判斷 · 點選帶圓點的和弦查看候選` : "未標記分歧，仍可人工修正";
@@ -1102,10 +1156,10 @@ function renderTimeline() {
   const list = chords(), duration = state.current.duration || 1, timeline = $("#timeline");
   timeline.innerHTML = list.map((segment, index) => {
     const played = playedChord(segment.chord);
-    const review = state.method === "ensemble" && needsReview(segment);
+    const review = ["ensemble", "chord_v2"].includes(state.method) && needsReview(segment);
     return `<button class="chord-block ${
       index === state.selected ? "selected" : ""
-    } ${review ? "needs-review" : ""}" ${review ? 'title="兩個引擎有不同判斷，點選查看"' : ""} data-segment="${index}" style="width:${
+    } ${review ? "needs-review" : ""}" ${review ? 'title="這段需要檢查，點選查看候選"' : ""} data-segment="${index}" style="width:${
       Math.max(62, (segment.end - segment.start) / duration * 1300)
     }px"><b>${escapeHtml(played)}</b>${state.capo ? `<em>原 ${escapeHtml(segment.chord)}</em>` : ""}<small>${
       durationText(segment.start)
@@ -1158,17 +1212,20 @@ function renderEditor() {
   renderCandidates(segment, editable);
 }
 function renderCandidates(segment, editable) {
-  const box = $("#chordCandidates"), comparison = state.method === "ensemble" ? segment?.comparison : null;
+  const v2 = state.method === "chord_v2";
+  const box = $("#chordCandidates"), comparison = v2 && segment?.refinement?.uncertain ?
+    { candidates: segment.refinement.alternatives } : state.method === "ensemble" ? segment?.comparison : null;
   const jobId = state.current?.id;
   box.classList.toggle("hidden", !comparison || !needsReview(segment));
   box.replaceChildren();
   if (!comparison || !needsReview(segment)) return;
   const explanation = document.createElement("p");
-  explanation.textContent = comparison.status === "detail" ? "根音與和弦家族相同，延伸音或低音不同。" : "BTC 對這一段有不同判斷；目前保留原本結果。";
+  explanation.textContent = v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
+    comparison.status === "detail" ? "根音與和弦家族相同，延伸音或低音不同。" : "BTC 對這一段有不同判斷；目前保留原本結果。";
   box.append(explanation);
   for (const candidate of comparison.candidates || []) {
     const row = document.createElement("div"), text = document.createElement("span");
-    text.textContent = `BTC ${playedChord(candidate.chord)} · 占此段 ${Math.round(candidate.share * 100)}% 時間`;
+    text.textContent = v2 ? playedChord(candidate.chord) : `BTC ${playedChord(candidate.chord)} · 占此段 ${Math.round(candidate.share * 100)}% 時間`;
     row.append(text);
     if (editable && !["N", "X", segment.chord].includes(candidate.chord)) {
       const button = document.createElement("button");
@@ -1177,7 +1234,7 @@ function renderCandidates(segment, editable) {
         if (state.current?.id !== jobId || chords()[state.selected] !== segment) return;
         if (!confirm(`將 ${durationText(segment.start)}–${durationText(segment.end)} 整段改為 ${candidate.chord}？`)) return;
         segment.chord = candidate.chord;
-        delete segment.comparison; segment.manual = true;
+        delete segment.comparison; delete segment.refinement; segment.manual = true;
         renderTimeline(); renderEditor(); renderVoicing(playedChord(segment.chord), segment.chord);
         await persist();
       });
@@ -1206,6 +1263,8 @@ async function saveSegment(event) {
   segment.start = Number($("#startInput").value);
   segment.end = Number($("#endInput").value);
   delete segment.comparison;
+  delete segment.refinement;
+  segment.manual = true;
   renderTimeline();
   renderCandidates(segment, state.current?.mine || state.viewer?.admin);
   renderVoicing(playedChord(segment.chord), segment.chord);

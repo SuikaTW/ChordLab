@@ -68,3 +68,20 @@ Onset tolerance is 50ms; offset tolerance is max(50ms,20% reference duration).
 It reports pitch, timing and string/fret scores separately. EGSet12 is the
 authors' own TabCNN benchmark, not a new independent test set. None of the
 models should become default based on one clip or synthetic fixtures alone.
+
+## Custom hybrid v2
+
+`tools/guitar_refinement.py` keeps GAPS pitch/onset/offset events, including
+repeated attacks, and attaches compatible TabCNN string/fret alternatives.
+The UI's phrase-wide beam search uses these as soft evidence only in standard
+tuning at capo 0. It does not union the two noisy event streams. Release
+suggestions from the fundamental envelope are diagnostic only. Raw compressed
+evidence and predictions remain in the job's HDD directory; no new checkpoint
+or training dataset is bundled. Both model checksums are recorded in new hybrid
+predictions.
+
+EGSet01/07 checks: GAPS + original fingering search 54.3%/37.5% annotated
+fingering agreement; hybrid 73.9%/62.5%. The UI evaluation uses 80 ms onset
+tolerance and maximum one-to-one matching; the pitch/offset benchmark above
+uses 50 ms. Same GAPS pitches/timing, not a pitch-accuracy gain. This remains an
+author-dataset sample check, not independent evaluation or unique-fingering proof.

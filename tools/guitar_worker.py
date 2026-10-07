@@ -1,7 +1,7 @@
 """Pinned, CPU-only guitar inference; no downloads or unrestricted pickle loads.
 
 GAPS estimates pitches/onsets/offsets. TabCNN estimates standard-tuning string
-and fret classes. These are separate experiments, not a claimed ensemble.
+and fret classes. The hybrid uses pitch-valid fingering hints, not a note union.
 """
 from __future__ import annotations
 
@@ -11,11 +11,14 @@ import json
 import math
 from pathlib import Path
 import time
+import sys
 
 import librosa
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.guitar_refinement import fuse_notes
 MODELS = ROOT / "vendor/guitar/models"
 CHECKSUMS = {
     "gaps": ("guitar-gaps-paper.pth", "94a7c936ec9fde83686d29007dc256274384e832739cadece39e92cee3b69a7e"),
@@ -32,7 +35,7 @@ def checkpoint(engine):
     return path
 
 
-def transcribe_gaps(samples, model_path):
+def transcribe_gaps(samples, model_path, evidence_path=None):
     import torch
     from piano_transcription_inference.models import Regress_onset_offset_frame_velocity_CRNN
     from piano_transcription_inference.utilities import RegressionPostProcessor
@@ -65,6 +68,9 @@ def transcribe_gaps(samples, model_path):
                     matrix = matrix[0 if index == 0 else 250:1000 if index == len(offsets) - 1 else 750]
                 output.setdefault(key, []).append(matrix)
     output = {key: np.concatenate(value)[:math.ceil(duration * 100)] for key, value in output.items()}
+    if evidence_path:
+        np.savez_compressed(evidence_path, **{key: value.astype(np.float16) for key, value in output.items()},
+                            schema=np.array(2), duration=np.array(duration))
     processor = RegressionPostProcessor(100, classes_num=88, onset_threshold=.3,
         offset_threshold=.3, frame_threshold=.1, pedal_offset_threshold=.2)
     events, _ = processor.output_dict_to_midi_events(output)
@@ -81,12 +87,12 @@ def transcribe_gaps(samples, model_path):
     return notes
 
 
-def transcribe_tabcnn(samples, model_path):
+def transcribe_tabcnn(samples, model_path, return_evidence=False):
     import onnxruntime as ort
     hop, sr = 512, 22050
     duration = len(samples) / sr
-    features = np.abs(librosa.cqt(samples, sr=sr, hop_length=hop, n_bins=192, bins_per_octave=24))
-    features = librosa.amplitude_to_db(features, ref=np.max)
+    magnitude = np.abs(librosa.cqt(samples, sr=sr, hop_length=hop, n_bins=192, bins_per_octave=24))
+    features = librosa.amplitude_to_db(magnitude, ref=np.max)
     features = ((features - features.min()) / (features.max() - features.min() + 1e-9)).astype(np.float32)
     padded = np.pad(features, ((0, 0), (4, 4)))
     config = ort.SessionOptions()
@@ -94,12 +100,16 @@ def transcribe_tabcnn(samples, model_path):
     config.inter_op_num_threads = 1
     config.enable_mem_pattern = False
     model = ort.InferenceSession(str(model_path), sess_options=config, providers=["CPUExecutionProvider"])
-    labels, scores = [], []
+    labels, scores, distributions = [], [], []
     for first in range(0, features.shape[1], 256):
         inputs = np.stack([padded[:, i:i + 9, None] for i in range(first, min(first + 256, features.shape[1]))])
         log_probs = model.run(None, {"input": inputs})[0]
         labels.append(log_probs.argmax(axis=-1))
         scores.append(np.exp(log_probs).max(axis=-1))
+        if return_evidence:
+            distributions.append(np.exp(log_probs))
+    if return_evidence:
+        return np.concatenate(distributions), magnitude
     labels, scores = np.concatenate(labels), np.concatenate(scores)
     notes = []
     for string, base in enumerate(STANDARD):
@@ -147,26 +157,48 @@ def main():
     parser.add_argument("audio", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("midi", type=Path)
-    parser.add_argument("--engine", choices=CHECKSUMS, required=True)
+    parser.add_argument("--engine", choices=[*CHECKSUMS, "hybrid"], required=True)
+    parser.add_argument("--gaps-cache", type=Path)
     args = parser.parse_args()
     started = time.monotonic()
-    model = checkpoint(args.engine)
+    model = checkpoint("gaps" if args.engine == "hybrid" else args.engine)
     sr = 16000 if args.engine == "gaps" else 22050
     samples, _ = librosa.load(args.audio, sr=sr, mono=True)
     duration = len(samples) / sr
     if not .02 <= duration <= 1200.25 or not np.isfinite(samples).all():
         raise ValueError("Audio outside guitar inference limits")
-    # Avoid undefined normalized features on silent recordings.
-    notes = [] if np.max(np.abs(samples)) < 1e-7 else (
-        transcribe_gaps(samples, model) if args.engine == "gaps" else transcribe_tabcnn(samples, model))
+    refinement = None
+    if np.max(np.abs(samples)) < 1e-7:
+        notes = []
+    elif args.engine == "hybrid":
+        cached = json.loads(args.gaps_cache.read_text()) if args.gaps_cache and args.gaps_cache.is_file() else None
+        if cached and (cached.get("profile") != "guitar_gaps_v1" or cached.get("checkpoint_sha256") != CHECKSUMS["gaps"][1]
+                       or not math.isfinite(float(cached.get("duration", 0)))
+                       or abs(float(cached.get("duration", 0)) - duration) > .02
+                       or not isinstance(cached.get("notes"), list)):
+            raise ValueError("GAPS cache does not match this recording")
+        gaps = cached["notes"] if cached else transcribe_gaps(librosa.resample(samples, orig_sr=sr, target_sr=16000), model,
+            args.output.parent / "guitar-gaps.evidence.npz")
+        if len(gaps) > 20000:
+            raise ValueError("Too many cached events")
+        probs, magnitude = transcribe_tabcnn(samples, checkpoint("tabcnn"), return_evidence=True)
+        notes, refinement = fuse_notes(gaps, probs, magnitude, duration)
+        np.savez_compressed(args.output.parent / "guitar-hybrid.evidence.npz", probabilities=probs.astype(np.float16),
+                            schema=np.array(2), duration=np.array(duration))
+    elif args.engine == "gaps":
+        notes = transcribe_gaps(samples, model, args.output.parent / "guitar-gaps.evidence.npz")
+    else:
+        notes = transcribe_tabcnn(samples, model)
     if len(notes) > 20000:
         raise ValueError("Too many guitar note events")
-    payload = dict(engine=args.engine, profile=f"guitar_{'gaps' if args.engine == 'gaps' else 'tabcnn_gpfx'}_v1",
+    payload = dict(engine=args.engine, profile="guitar_hybrid_v2" if args.engine == "hybrid" else f"guitar_{'gaps' if args.engine == 'gaps' else 'tabcnn_gpfx'}_v1",
         duration=round(duration, 4), note_count=len(notes), notes=notes,
-        elapsed_seconds=round(time.monotonic() - started, 3), checkpoint_sha256=CHECKSUMS[args.engine][1],
+        elapsed_seconds=round(time.monotonic() - started, 3), checkpoint_sha256=CHECKSUMS["gaps" if args.engine == "hybrid" else args.engine][1],
+        refinement=refinement,
+        **({"checkpoints": {name: CHECKSUMS[name][1] for name in ("gaps", "tabcnn")}} if args.engine == "hybrid" else {}),
         experimental=True, confidence_kind="uncalibrated_model_output",
         **({"fingering_tuning": "standard", "fingering_capo": 0,
-            "limitations": ["frets_0_to_19", "repeated_same_fret_plucks_may_merge"]} if args.engine == "tabcnn" else {}))
+            "limitations": ["frets_0_to_19", "repeated_same_fret_plucks_may_merge"] if args.engine == "tabcnn" else ["frets_0_to_19", "unverified_fingerings"]} if args.engine in {"tabcnn", "hybrid"} else {}))
     write_midi(notes, args.midi)
     args.output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 

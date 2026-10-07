@@ -205,7 +205,7 @@ const TabStudio = (() => {
     $("#tabSource").textContent = "";
     $("#tabEngineMidi").classList.add("hidden");
     $("#tabEngineMidi").removeAttribute("href");
-    $("#tabFingeringOptions").classList.toggle("hidden", state.tabEngine !== "tabcnn");
+    $("#tabFingeringOptions").classList.toggle("hidden", !["tabcnn", "hybrid"].includes(state.tabEngine));
     controls();
     $("#generateGuitarTab").classList.add("hidden");
     $("#guitarPreview").classList.add("hidden");
@@ -310,8 +310,14 @@ const TabStudio = (() => {
           return;
         }
         if (task.status === "done") {
+          // Another refinement may finish while this version is being edited.
+          // Background polling must never reload over unsaved personal changes.
+          if (dirty || saving) {
+            loadQueueStatus();
+            return;
+          }
           const current = await api(`/api/jobs/${id}?include_notes=false`);
-          if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
+          if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine || dirty || saving) return;
           state.current = current;
           state.tabJob = null;
           await loadContinuousTab();
@@ -404,6 +410,7 @@ const TabStudio = (() => {
       ? "我的版本"
       : state.tabEngine === "gaps" ? "GAPS · 實驗"
       : state.tabEngine === "tabcnn" ? "TabCNN · 實驗"
+      : state.tabEngine === "hybrid" ? "整合 v2 · 實驗"
       : state.current.pure_guitar || state.current.result.guitar_tab?.source === "original"
       ? "純吉他"
       : "吉他分離軌";

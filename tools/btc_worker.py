@@ -56,7 +56,7 @@ def analyze(source):
     duration = len(samples) / sr
     if not 0 < duration <= 1200.25:
         raise ValueError("Audio duration outside BTC limits")
-    events = []
+    events, frames = [], []
     with torch.inference_mode():
         # Match upstream's ten-second CQT blocks and normalization. Keep actual
         # hop timestamps, avoiding accumulated rounding drift in long songs.
@@ -69,10 +69,15 @@ def analyze(source):
             hidden, _ = model.self_attn_layers(torch.tensor(features, dtype=torch.float32).unsqueeze(0))
             probs = torch.softmax(model.output_layer(hidden), dim=-1)[0, :count]
             scores, indices = probs.max(dim=-1)
+            top_scores, top_indices = probs.topk(4, dim=-1)
             for frame, (index, score) in enumerate(zip(indices.tolist(), scores.tolist())):
                 timestamp = (offset + frame * 2048) / sr
                 if timestamp < duration:
                     events.append((timestamp, label(index), score))
+                    frames.append(dict(start=round(timestamp, 4),
+                        end=round(min(duration, (offset + (frame+1) * 2048) / sr, (offset + sr*10) / sr), 4),
+                        candidates=[{"chord": label(i), "score": round(p, 5)}
+                                    for i, p in zip(top_indices[frame].tolist(), top_scores[frame].tolist())]))
     chords = []
     for i, (start, chord, score) in enumerate(events):
         end = events[i+1][0] if i+1 < len(events) else duration
@@ -88,7 +93,7 @@ def analyze(source):
         segment["confidence"] = round(segment.pop("score_sum") / (segment["end"]-segment["start"]), 4)
         segment["start"] = round(segment["start"], 4)
         segment["end"] = round(segment["end"], 4)
-    return dict(engine="btc_ismir19_170", duration=duration, chords=chords,
+    return dict(engine="btc_ismir19_170", duration=duration, chords=chords, frames=frames,
                 elapsed_seconds=round(time.monotonic()-started, 3), checkpoint_sha256=CHECKSUM,
                 confidence_kind="uncalibrated_softmax", input=Path(source).name)
 

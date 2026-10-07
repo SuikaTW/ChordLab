@@ -26,7 +26,7 @@ Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runt
 ## Experimental guitar transcription
 
 The guitar TAB engine selector keeps Basic Pitch, GAPS pitch transcription and
-TabCNN/GuitarProFX string estimation as independent versions. Owners/admins can
+TabCNN/GuitarProFX string estimation and hybrid TAB v2 as independent versions. Owners/admins can
 queue missing versions and download their MIDI; public viewers can read completed
 versions. No existing baseline, chord edits or personal TAB is overwritten by
 experiment generation. Tasks survive restarts and share the heavy-analysis queue.
@@ -41,6 +41,22 @@ the authors' benchmark, not an independent blind test. Basic Pitch remains the
 default; new engines remain explicitly experimental.
 
 See [model provenance, licenses and rebuild instructions](vendor/guitar/README.md).
+Hybrid v2 preserves GAPS pitches/timing and uses pitch-valid TabCNN alternatives
+as soft anchors in whole-phrase fingering search. Low-evidence hints are omitted;
+release proposals remain diagnostic, not automatic trimming. EGSet01/07 annotated
+fingering agreement rose from 54.3%/37.5% (GAPS + original search) to 73.9%/62.5%
+(hybrid, 80 ms onset tolerance, maximum one-to-one matching). This is a small
+author-dataset check, not a general accuracy claim; pitch/onset F1 is unchanged.
+
+Optional **chord v2** uses a custom acoustic/bass/context decoder with new
+boundaries, while preserving the baseline, saved edits and active key/method.
+Queue it from the chord panel and select it after completion. Bass is not assumed
+to be the root; inversions require sustained separate-bass evidence. No invented
+9/11/13 labels or forced key/progression prior. Ambiguous candidates are not
+probabilities. It shares durable refinement quotas/queue/restart recovery, and
+failure is nonfatal. Controlled audio tests pass; real-song chord accuracy has
+not yet been measured against human ground truth. See the Chinese README for
+details and validation commands.
 Models/runtimes stay on SSD; media, experimental predictions and benchmarks stay
 on HDD. `tools/benchmark_guitar.py` scores annotated notes without editing jobs.
 

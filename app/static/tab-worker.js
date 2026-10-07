@@ -1,4 +1,4 @@
-importScripts("/static/tab-engine.js?v=5");
+importScripts("/static/tab-engine.js?v=6");
 self.onmessage = (event) => {
   try {
     self.postMessage({ result: ChordLabTab.assign(event.data.notes, event.data.options) });
