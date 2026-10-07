@@ -8,6 +8,9 @@
     dadgad: { label: "DADGAD", midi: [38, 45, 50, 55, 57, 62] },
     half_down: { label: "降半音", midi: [39, 44, 49, 54, 58, 63] },
     whole_down: { label: "降全音", midi: [38, 43, 48, 53, 57, 62] },
+    bass_standard: { label: "四弦 E A D G", midi: [28, 33, 38, 43], instrument: "bass" },
+    bass_drop_d: { label: "四弦 Drop D · D A D G", midi: [26, 33, 38, 43], instrument: "bass" },
+    bass_five: { label: "五弦 B E A D G", midi: [23, 28, 33, 38, 43], instrument: "bass" },
   };
 
   function prepare(notes, clean) {
@@ -49,8 +52,12 @@
 
   function assign(notes, options = {}) {
     const clean = options.density !== "full";
-    const tuning = (TUNINGS[options.tuning] || TUNINGS.standard).midi;
-    const capo = Math.min(11, Math.max(0, Math.round(Number(options.capo) || 0)));
+    const bass = options.instrument === "bass" || !options.instrument && TUNINGS[options.tuning]?.instrument === "bass";
+    const definition = TUNINGS[options.tuning];
+    const tuning = (definition && (definition.instrument === "bass") === bass ? definition :
+      bass ? TUNINGS.bass_standard : TUNINGS.standard).midi;
+    const stringCount = tuning.length;
+    const capo = bass ? 0 : Math.min(11, Math.max(0, Math.round(Number(options.capo) || 0)));
     const prepared = prepare(notes, clean), groups = [];
     for (const note of prepared) {
       const last = groups[groups.length - 1];
@@ -73,14 +80,14 @@
     let beam = [{
       cost: 0,
       position: range ? range[0] : 0,
-      active: Array(6).fill(null),
+      active: Array(stringCount).fill(null),
       parent: null,
       placed: [],
     }];
     for (const group of groups) {
-      // A single guitar has at most six independently sounding strings.
+      // A single instrument cannot sound more independent notes than strings.
       const pitches = [...group.notes].sort((a, b) => b.velocity - a.velocity)
-        .slice(0, 6).sort((a, b) => a.midi - b.midi);
+        .slice(0, stringCount).sort((a, b) => a.midi - b.midi);
       let partial = beam.map((parent) => ({
         cost: parent.cost,
         position: parent.position,
@@ -95,7 +102,7 @@
           // Keep a path for unplayable pitches; do not silently block new notes
           // just because an earlier model event has an excessively long sustain.
           next.push({ ...candidate, cost: candidate.cost + 18 + Math.min(1, note.velocity) * 12 });
-          for (let string = 0; string < 6; string++) {
+          for (let string = 0; string < stringCount; string++) {
             const fret = note.midi - tuning[string] - capo;
             if (fret < 0 || fret + capo > 24 || candidate.used.has(string)) continue;
             const placedNote = { ...note, string, fret };
@@ -105,7 +112,7 @@
             const crossing = candidate.placed.filter((n) => n.midi < note.midi && n.string > string).length;
             const movement = fret > 0 ? Math.abs(fret - candidate.position) * .12 : 0;
             const preference = range ? Math.max(0, range[0] - fret, fret - range[1]) * 2 : 0;
-            const validHint = options.useModelFingering && (!options.tuning || options.tuning === "standard") && capo === 0 &&
+            const validHint = !bass && options.useModelFingering && (!options.tuning || options.tuning === "standard") && capo === 0 &&
               Number.isInteger(note.model_string) && note.model_string >= 0 && note.model_string < 6 &&
               Number.isInteger(note.model_fret) && note.model_fret >= 0 && note.model_fret <= 19 &&
               tuning[note.model_string] + note.model_fret === note.midi;
@@ -149,7 +156,7 @@
     for (let node = beam[0]; node?.parent; node = node.parent) chunks.push(node.placed);
     const assigned = chunks.reverse().flat().sort((a, b) => a.start - b.start || a.string - b.string);
     const diagnostics = {
-      crowdedOnsets: groups.filter((group) => group.notes.length > 6).length,
+      crowdedOnsets: groups.filter((group) => group.notes.length > stringCount).length,
       wideShapes: 0,
       rapidShifts: 0,
     };
@@ -175,7 +182,7 @@
       }
       previousShape = { position, start: placed[0].start };
     }
-    const lastByString = Array(6).fill(null);
+    const lastByString = Array(stringCount).fill(null);
     for (const note of assigned) {
       const previous = lastByString[note.string];
       if (previous && previous.end > note.start) previous.end = note.start;
@@ -190,6 +197,7 @@
       omittedCount: selectedCount - assigned.length,
       tuning: [...tuning],
       capo,
+      instrument: bass ? "bass" : "guitar",
       diagnostics,
     };
   }

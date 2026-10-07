@@ -27,6 +27,7 @@ const state = {
   tabNotes: [],
   tabSource: "unavailable",
   tabDensity: "clean",
+  tabInstrument: "guitar",
   page: "workspace",
   resultView: "chords",
   librarySort: "recent",
@@ -169,6 +170,7 @@ function bindEvents() {
     button.addEventListener("click", () => {
       if (!TabStudio.reconfigure()) return;
       state.tabDensity = button.dataset.tabDensity;
+      if (state.current) localStorage.setItem(tabStorageKey("density"), state.tabDensity);
       $$("[data-tab-density]").forEach((item) => item.classList.toggle("active", item === button));
       renderContinuousTab();
     })
@@ -176,7 +178,7 @@ function bindEvents() {
   $("#tabTuning").addEventListener("change", (event) => {
     if (!TabStudio.reconfigure()) return;
     state.tabTuning = event.target.value;
-    if (state.current) localStorage.setItem(`tab-tuning:${state.current.id}`, state.tabTuning);
+    if (state.current) localStorage.setItem(tabStorageKey("tuning"), state.tabTuning);
     renderContinuousTab();
   });
   for (const [id, key] of [["tabVoice", "voice"], ["tabPosition", "position"]]) {
@@ -184,7 +186,7 @@ function bindEvents() {
       if (!TabStudio.reconfigure()) {
         return;
       }
-      if (state.current) localStorage.setItem(`tab-${key}:${state.current.id}`, event.target.value);
+      if (state.current) localStorage.setItem(tabStorageKey(key), event.target.value);
       renderContinuousTab();
     });
   }
@@ -209,7 +211,7 @@ function bindEvents() {
   );
   $("#buildChordV2").addEventListener("click", buildChordRefinement);
   $("#capoSelect").addEventListener("change", (event) => {
-    if (!TabStudio.reconfigure()) return;
+    if (state.tabInstrument !== "bass" && !TabStudio.reconfigure()) return;
     state.capo = Number(event.target.value);
     if (state.current) {
       localStorage.setItem(`capo:${state.current.id}`, state.capo);
@@ -440,6 +442,8 @@ function renderJobs() {
 
 async function openJob(id, isPublic = false, reveal = false) {
   if (!TabStudio.canLeave()) return;
+  state.tabInstrument = "guitar";
+  state.guitarTabEngine = "basic_pitch";
   state.tabEngine = "basic_pitch";
   $("#tabEngine").value = "basic_pitch";
   TabStudio.reset(id);
@@ -454,16 +458,8 @@ async function openJob(id, isPublic = false, reveal = false) {
   state.tabSource = "unavailable";
   state.tabCancel?.();
   state.tabRender = (state.tabRender || 0) + 1;
-  state.tabTuning = localStorage.getItem(`tab-tuning:${id}`) || "standard";
-  if (!ChordLabTab.TUNINGS[state.tabTuning]) state.tabTuning = "standard";
-  $("#tabTuning").value = state.tabTuning;
+  TabStudio.configure(id);
   $("#showWeakTracks").checked = false;
-  for (const [control, key] of [["tabVoice", "voice"], ["tabPosition", "position"]]) {
-    const select = $("#" + control), saved = localStorage.getItem(`tab-${key}:${id}`);
-    select.value = [...select.options].some((option) => option.value === saved)
-      ? saved
-      : select.options[0].value;
-  }
   try {
     const job = await api(
       isPublic ? `/api/public/jobs/${id}?include_notes=false` : `/api/jobs/${id}?include_notes=false`,
@@ -944,6 +940,10 @@ function transposeChord(label, semitones) {
 function playedChord(label) {
   return transposeChord(label, -state.capo);
 }
+
+function tabStorageKey(setting, id = state.current?.id) {
+  return `tab-${setting}:${id}${state.tabInstrument === "bass" ? ":bass" : ""}`;
+}
 function renderCapo() {
   const key = state.current?.result?.key;
   $("#capoSelect").value = String(state.capo);
@@ -955,24 +955,26 @@ function renderCapo() {
 
 async function loadContinuousTab() {
   const engine = state.tabEngine || "basic_pitch";
-  if (!state.current?.result || state.tabJob === `${state.current.id}:${engine}`) return;
+  const instrument = state.tabInstrument || "guitar";
+  if (!state.current?.result || state.tabJob === `${state.current.id}:${instrument}:${engine}`) return;
+  const generation = state.tabLoad = (state.tabLoad || 0) + 1;
   const jobId = state.current.id, separation = state.current.result.separation || {};
-  state.tabJob = `${jobId}:${engine}`;
+  state.tabJob = `${jobId}:${instrument}:${engine}`;
   state.tabSource = "unavailable";
   state.tabNotes = [];
-  const hasGuitar = engine === "basic_pitch" ? (separation.midi_stems || []).includes("guitar") :
+  const hasGuitar = instrument === "bass" ? (separation.midi_stems || []).includes("bass") : engine === "basic_pitch" ? (separation.midi_stems || []).includes("guitar") :
     state.current.result.guitar_tab?.variants?.[engine]?.status === "done";
   try {
     const [payload] = await Promise.all([
-      hasGuitar ? api(`/api/jobs/${jobId}/notes/guitar?engine=${engine}`) : Promise.resolve(null),
+      hasGuitar ? api(`/api/jobs/${jobId}/notes/${instrument}?engine=${engine}`) : Promise.resolve(null),
       TabStudio.load(jobId),
     ]);
-    if (state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine) return;
+    if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
     state.tabNotes = payload?.notes || [];
     state.tabProfile = payload?.profile || "general";
-    state.tabSource = payload ? "guitar" : "unavailable";
+    state.tabSource = payload ? instrument : "unavailable";
   } catch (error) {
-    if (state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine) return;
+    if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
     state.tabJob = null;
     toast(error.message, true);
   }
@@ -982,7 +984,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=6");
+    const worker = new Worker("/static/tab-worker.js?v=7");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
@@ -1015,10 +1017,11 @@ function assignTabNotes(notes) {
       options: {
         density: state.tabDensity,
         tuning: state.tabTuning || "standard",
-        capo: state.capo,
+        instrument: state.tabInstrument || "guitar",
+        capo: state.tabInstrument === "bass" ? 0 : state.capo,
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
-        useModelFingering: ["tabcnn", "hybrid"].includes(state.tabEngine) && $("#tabFingering").value === "model",
+        useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });
   });

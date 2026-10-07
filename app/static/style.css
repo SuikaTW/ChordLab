@@ -295,7 +295,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 .tab-system-string button:hover,.tab-system-string button:focus-visible{background:var(--acid);color:var(--ink);z-index:4}
 .tab-system-playhead{position:absolute;top:0;bottom:0;left:28px;width:2px;border-radius:2px;background:var(--coral);box-shadow:0 0 0 2px rgba(255,118,92,.13);opacity:0;pointer-events:none;transition:left .12s linear,opacity .15s}
 .tab-system.playing .tab-system-playhead{opacity:1}
-.continuous-tab .tab-system{height:219px;box-sizing:border-box;margin-bottom:11px;contain:layout paint;transform:none}
+.continuous-tab .tab-system{height:var(--tab-system-height,219px);box-sizing:border-box;margin-bottom:11px;contain:layout paint;transform:none}
 .tab-spacer{width:1px;pointer-events:none}
 .tab-rhythm-grid{position:absolute;inset:0 0 0 28px;pointer-events:none}
 .tab-beat,.tab-barline{position:absolute;top:0;bottom:0;width:1px;background:#d7d3c6;z-index:0}

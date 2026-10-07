@@ -1,6 +1,30 @@
 import "../app/static/tab-engine.js";
 
 const { assign } = globalThis.ChordLabTab;
+Deno.test("bass four/five strings and Drop D use actual low pitches without guitar capo", () => {
+  const four = assign([note(28), note(33), note(38), note(43)], { instrument: "bass", tuning: "bass_standard", capo: 7 });
+  assert(four.tuning.join(",") === "28,33,38,43" && four.capo === 0, "Bass is octave-correct and independent of guitar capo");
+  assert(four.notes.length === 4 && four.notes.every((n) => n.fret === 0), "Four open strings");
+  playable(four);
+  const low = assign([note(23)], { instrument: "bass", tuning: "bass_five" });
+  assert(low.tuning.length === 5 && low.notes[0].string === 0 && low.notes[0].fret === 0, "Five-string low B");
+  assert(assign([note(23)], { instrument: "bass", tuning: "bass_standard" }).notes.length === 0, "Do not fake low B on a four-string E bass");
+  const drop = assign([note(26)], { instrument: "bass", tuning: "bass_drop_d" });
+  assert(drop.notes[0].string === 0 && drop.notes[0].fret === 0, "Bass Drop D");
+  playable(low);
+  playable(drop);
+});
+Deno.test("bass retains repeated plucks and does not use guitar model anchors", () => {
+  const repeated = Array.from({ length: 16 }, (_, i) => note(28, i * .08, .18, .5));
+  const result = assign(repeated, { instrument: "bass" });
+  assert(result.notes.length === repeated.length, "Retain separate repeated attacks");
+  assert(result.notes.every((n) => n.string >= 0 && n.string < 4), "Only actual bass strings");
+  playable(result);
+  const source = [{ ...note(43), model_string: 1, model_fret: 10, fingering_score: 1 }];
+  const hinted = assign(source, { instrument: "bass", useModelFingering: true });
+  const plain = assign(source, { instrument: "bass" });
+  assert(hinted.notes[0].string === plain.notes[0].string, "Guitar hints cannot anchor bass");
+});
 Deno.test("hybrid alternatives remain soft and reject impossible pitch hints", () => {
   const source = [{ ...note(64), model_string: 3, model_fret: 9, fingering_score: .9,
     fingering_candidates: [{ string: 3, fret: 9, score: .9 }, { string: 5, fret: 0, score: .88 },

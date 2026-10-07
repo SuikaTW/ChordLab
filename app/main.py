@@ -22,7 +22,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Iterator
+from typing import Annotated, Iterator, Literal
 from urllib.parse import parse_qs, urlparse
 
 from authlib.integrations.starlette_client import OAuth
@@ -255,6 +255,10 @@ def init_db() -> None:
         if "review_guitar" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN review_guitar INTEGER NOT NULL DEFAULT 0")
         connection.execute("""CREATE TABLE IF NOT EXISTS user_tabs (
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            viewer TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL,
+            updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, viewer))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS user_bass_tabs (
             job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
             viewer TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL,
             updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, viewer))""")
@@ -1094,17 +1098,21 @@ def get_track_notes(request: Request, job_id: str, track: str, engine: str = "ba
 
 
 @app.get("/api/jobs/{job_id}/tab")
-def get_personal_tab(request: Request, job_id: str) -> dict:
+def get_personal_tab(request: Request, job_id: str, instrument: Literal["guitar", "bass"] = "guitar") -> dict:
     accessible_job(request, job_id)
+    table = "user_bass_tabs" if instrument == "bass" else "user_tabs"
     with db() as connection:
-        row = connection.execute("SELECT document,revision FROM user_tabs WHERE job_id=? AND viewer=?",
+        row = connection.execute(f"SELECT document,revision FROM {table} WHERE job_id=? AND viewer=?",
                                  (job_id, identity_key(request.state.identity))).fetchone()
     return {"document": json.loads(row["document"]) if row else None, "revision": row["revision"] if row else 0}
 
 
 @app.put("/api/jobs/{job_id}/tab")
-def save_personal_tab(request: Request, job_id: str, document: TabDocument) -> dict:
+def save_personal_tab(request: Request, job_id: str, document: TabDocument, instrument: Literal["guitar", "bass"] = "guitar") -> dict:
     job = accessible_job(request, job_id)
+    if document.instrument != instrument:
+        raise HTTPException(400, "樂器與儲存目標不一致")
+    table = "user_bass_tabs" if instrument == "bass" else "user_tabs"
     if job["status"] != "done":
         raise HTTPException(409, "請等分析完成")
     if any(note.end > float(job["duration"] or MAX_DURATION) + .5 for note in document.notes):
@@ -1115,13 +1123,13 @@ def save_personal_tab(request: Request, job_id: str, document: TabDocument) -> d
         connection.execute("BEGIN IMMEDIATE")
         if not connection.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,)).fetchone():
             raise HTTPException(404, "此分析已被刪除")
-        existing = connection.execute("SELECT revision FROM user_tabs WHERE job_id=? AND viewer=?", (job_id, key)).fetchone()
+        existing = connection.execute(f"SELECT revision FROM {table} WHERE job_id=? AND viewer=?", (job_id, key)).fetchone()
         revision = existing["revision"] if existing else 0
         if document.revision != revision:
             raise HTTPException(409, "另一個分頁已更新此譜，請重新載入後再編輯")
         payload = document.model_dump()
         payload["revision"] = revision + 1
-        connection.execute("""INSERT INTO user_tabs(job_id,viewer,revision,document,updated_at) VALUES (?,?,?,?,?)
+        connection.execute(f"""INSERT INTO {table}(job_id,viewer,revision,document,updated_at) VALUES (?,?,?,?,?)
             ON CONFLICT(job_id,viewer) DO UPDATE SET revision=excluded.revision,
             document=excluded.document,updated_at=excluded.updated_at""",
                            (job_id, key, revision + 1, json.dumps(payload), int(time.time())))
@@ -1130,6 +1138,68 @@ def save_personal_tab(request: Request, job_id: str, document: TabDocument) -> d
 
 def guitar_uses_original(row: sqlite3.Row, result: dict) -> bool:
     return bool(row["pure_guitar"]) or (result.get("guitar_tab") or {}).get("source") == "original"
+
+
+def bass_is_ready(job_id: str, result: dict) -> bool:
+    return "bass" in (result.get("separation") or {}).get("midi_stems", []) and all(
+        (JOBS / job_id / "stem-midi" / f"bass.{suffix}").is_file() for suffix in ("json", "mid"))
+
+
+@app.get("/api/jobs/{job_id}/bass-analysis")
+def bass_task_status(request: Request, job_id: str) -> dict:
+    row = accessible_job(request, job_id)
+    result = json.loads(row["result"] or "{}")
+    has_source = "bass" in ((result.get("separation") or {}).get("all_stems") or
+                            (result.get("separation") or {}).get("stems") or [])
+    ready = bass_is_ready(job_id, result)
+    status = "done" if ready else (result.get("bass_tab") or {}).get("status", "pending" if has_source else "unavailable")
+    with db() as connection:
+        task = connection.execute("SELECT engine,status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
+    if task and task["engine"] == "bass":
+        status = task["status"]
+    return {"status": status, "ready": ready, "available": has_source and BASIC_PYTHON.is_file(),
+        "busy_engine": task["engine"] if task and task["status"] in {"queued", "working"} else None}
+
+
+@app.post("/api/jobs/{job_id}/bass-analysis", status_code=202)
+def start_bass_task(request: Request, job_id: str) -> dict:
+    row = editable_job(request, job_id)
+    result = json.loads(row["result"] or "{}")
+    separation = result.get("separation") or {}
+    if row["status"] != "done" or "bass" not in (separation.get("all_stems") or separation.get("stems") or []):
+        raise HTTPException(400, "這首歌沒有可分析的 Bass 分軌")
+    if not BASIC_PYTHON.is_file():
+        raise HTTPException(503, "Bass 轉錄環境尚未安裝")
+    if bass_is_ready(job_id, result):
+        return {"status": "done"}
+    job_file(job_id, "stems/bass.wav")
+    return enqueue_refinement_task(request, row, "bass")
+
+
+def process_bass_task(job_id: str) -> None:
+    directory = JOBS / job_id / "stem-midi"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    output, midi = directory / "bass.json", directory / "bass.mid"
+    temporary, temporary_midi = output.with_suffix(".json.tmp"), midi.with_suffix(".mid.tmp")
+    with heavy_analysis_slot:
+        run_command([str(BASIC_PYTHON), str(ROOT / "tools/basic_pitch_worker.py"),
+            str(JOBS / job_id / "stems/bass.wav"), str(temporary), str(temporary_midi), "--bass"], timeout=1800)
+    payload = json.loads(temporary.read_text())
+    if payload.get("profile") != "bass_v1" or not isinstance(payload.get("notes"), list):
+        raise ValueError("Invalid Bass transcription output")
+    temporary.replace(output)
+    temporary_midi.replace(midi)
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row:
+            result = json.loads(row["result"] or "{}")
+            separation = result.setdefault("separation", {})
+            separation["midi_stems"] = list(dict.fromkeys([*separation.get("midi_stems", []), "bass"]))
+            separation.setdefault("midi_errors", {}).pop("bass", None)
+            result["bass_tab"] = {"status": "done", "profile": "bass_v1", "source": "separated"}
+            connection.execute("UPDATE jobs SET result=?,updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
+        connection.execute("UPDATE guitar_tasks SET status='done',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
 
 
 @app.get("/api/jobs/{job_id}/guitar-analysis")
@@ -1291,6 +1361,9 @@ def process_guitar_task(job_id: str) -> None:
         engine = task["engine"] if task else "basic_pitch"
         connection.execute("UPDATE guitar_tasks SET status='working',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
     try:
+        if engine == "bass":
+            process_bass_task(job_id)
+            return
         if engine == "chord_v2":
             process_chord_refinement(job_id, initial)
             return
@@ -1327,11 +1400,11 @@ def process_guitar_task(job_id: str) -> None:
         log_job_error(job_id, "guitar-task", exc)
         with db() as connection:
             connection.execute("UPDATE guitar_tasks SET status='failed',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
-            if engine == "chord_v2":
+            if engine in {"chord_v2", "bass"}:
                 row = connection.execute("SELECT result FROM jobs WHERE id=?", (job_id,)).fetchone()
                 if row:
                     result = json.loads(row["result"] or "{}")
-                    result["chord_refinement"] = {"status": "failed"}
+                    result["bass_tab" if engine == "bass" else "chord_refinement"] = {"status": "failed"}
                     connection.execute("UPDATE jobs SET result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), job_id))
 
 
@@ -1801,6 +1874,7 @@ def transcribe_stem_midis(job_id: str, directory: Path, stem_names: list[str], a
                 str(BASIC_PYTHON), str(ROOT / "tools" / "basic_pitch_worker.py"), str(source),
                 str(output_dir / f"{stem}.json"), str(output_dir / f"{stem}.mid"),
                 *(["--guitar"] if stem == "guitar" else []),
+                *(["--bass"] if stem == "bass" else []),
             ], timeout=1800)
             completed.append(stem)
         except Exception as exc:
@@ -2133,26 +2207,27 @@ def build_audio_mix(job_id: str, selected: list[str]) -> FileResponse:
 
 
 @app.get("/api/jobs/{job_id}/guitar-preview")
-async def guitar_preview(request: Request, job_id: str, start: Annotated[float, Query(ge=0, le=1200, allow_inf_nan=False)] = 0) -> FileResponse:
+async def guitar_preview(request: Request, job_id: str, start: Annotated[float, Query(ge=0, le=1200, allow_inf_nan=False)] = 0,
+                         track: Literal["guitar", "bass"] = "guitar") -> FileResponse:
     row = accessible_job(request, job_id)
     result = json.loads(row["result"] or "{}")
-    original = guitar_uses_original(row, result)
+    original = track == "guitar" and guitar_uses_original(row, result)
     separation = result.get("separation") or {}
-    if not original and "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
-        raise HTTPException(404, "沒有吉他音軌")
-    source = job_file(job_id, "audio.wav" if original else "stems/guitar.wav")
+    if not original and track not in (separation.get("all_stems") or separation.get("stems") or []):
+        raise HTTPException(404, "沒有這個樂器音軌")
+    source = job_file(job_id, "audio.wav" if original else f"stems/{track}.wav")
     start = int(min(start, max(0, float(row["duration"] or 20) - 1)) // 20 * 20)
-    cached = JOBS / job_id / f"guitar-preview-{start}.m4a"
+    cached = JOBS / job_id / f"{track}-preview-{start}.m4a"
     if cached.is_file():
         return FileResponse(cached, media_type="audio/mp4")
     try:
-        return await light_tasks.run(build_guitar_preview, job_id, source, start)
+        return await light_tasks.run(build_guitar_preview, job_id, source, start, track)
     except PoolBusy as exc:
         raise HTTPException(429, str(exc)) from exc
 
 
-def build_guitar_preview(job_id: str, source: Path, start: int) -> FileResponse:
-    output = JOBS / job_id / f"guitar-preview-{start}.m4a"
+def build_guitar_preview(job_id: str, source: Path, start: int, track: str = "guitar") -> FileResponse:
+    output = JOBS / job_id / f"{track}-preview-{start}.m4a"
     with mix_generation_lock:
         if not output.is_file():
             temporary = output.with_suffix(".building.m4a")

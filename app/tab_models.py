@@ -3,7 +3,8 @@ from pydantic import BaseModel, Field, model_validator
 
 TUNINGS = {"standard": [40,45,50,55,59,64], "drop_d": [38,45,50,55,59,64],
            "dadgad": [38,45,50,55,57,62], "half_down": [39,44,49,54,58,63],
-           "whole_down": [38,43,48,53,57,62]}
+           "whole_down": [38,43,48,53,57,62], "bass_standard": [28,33,38,43],
+           "bass_drop_d": [26,33,38,43], "bass_five": [23,28,33,38,43]}
 
 
 class TabNote(BaseModel):
@@ -28,7 +29,8 @@ class TabRhythm(BaseModel):
 class TabDocument(BaseModel):
     revision: int = Field(default=0, ge=0)
     notes: list[TabNote] = Field(max_length=20000)
-    tuning: Literal["standard", "drop_d", "dadgad", "half_down", "whole_down"] = "standard"
+    instrument: Literal["guitar", "bass"] = "guitar"
+    tuning: Literal["standard", "drop_d", "dadgad", "half_down", "whole_down", "bass_standard", "bass_drop_d", "bass_five"] = "standard"
     capo: int = Field(default=0, ge=0, le=11)
     voice: Literal["all", "high", "low"] = "all"
     position: Literal["auto", "open", "middle", "high"] = "auto"
@@ -39,8 +41,15 @@ class TabDocument(BaseModel):
 
     @model_validator(mode="after")
     def validate_fingering(self):
+        bass_tuning = self.tuning.startswith("bass_")
+        if bass_tuning != (self.instrument == "bass"):
+            raise ValueError("樂器與調弦不一致")
+        if self.instrument == "bass" and (self.capo != 0 or self.source_engine != "basic_pitch"):
+            raise ValueError("Bass 不使用吉他 Capo 或吉他模型")
         seen, last = set(), {}
         for note in sorted(self.notes, key=lambda n: (n.start, n.string)):
+            if note.string >= len(TUNINGS[self.tuning]):
+                raise ValueError("超出樂器弦數")
             if note.index in seen or note.end <= note.start:
                 raise ValueError("音符重複或時間無效")
             if TUNINGS[self.tuning][note.string] + self.capo + note.fret != note.midi:

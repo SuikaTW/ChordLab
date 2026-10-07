@@ -23,6 +23,25 @@ Users may explicitly publish a completed analysis to the shared library. Public 
 
 Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Short opening songwriter/composer captions hallucinated as lyrics are filtered; singing transcription remains approximate and may need manual correction.
 
+## Bass TAB
+
+Select **Bass** in the instrument TAB panel for a continuous four-string score,
+or choose Drop D / five-string low B in the tuning options. Actual bass octave,
+independent settings and personal revisions, no guitar capo or guitar model
+anchors. Existing Bass MIDI/JSON is reused without rewriting. Owners/admins can
+queue missing transcription from an existing Bass stem; no new separation is
+needed. Jobs without a Bass stem need a new stem-enabled analysis.
+
+New Basic Pitch `bass_v1` transcription constrains B0–G4, retains events down to
+60 ms and uses GM fingered-bass MIDI. This is not a proven accuracy improvement;
+harmonics, bleed, slides/slap and inferred fingerings remain approximate. The
+durable refinement queue/quotas/recovery are shared with guitar and chord v2.
+Private Bass documents use `user_bass_tabs`; existing `user_tabs` and the default
+guitar API remain compatible. Read/write `/tab?instrument=bass` for Bass. MIDI
+download is supported; existing PDF export remains chords/lyrics, not Bass TAB.
+Desktop/mobile switching and isolated-catalog save/reload checks are provided in
+`tests/bass_tab_browser_smoke.py` (default read-only, explicit generation flag).
+
 ## Experimental guitar transcription
 
 The guitar TAB engine selector keeps Basic Pitch, GAPS pitch transcription and

@@ -1,6 +1,11 @@
 /* Personal TAB editing and windowed rendering. Audio remains the master clock. */
 const TabStudio = (() => {
-  const ROW_HEIGHT = 230;
+  const isBass = () => state.tabInstrument === "bass";
+  const instrument = () => isBass() ? "bass" : "guitar";
+  const capo = () => isBass() ? 0 : state.capo;
+  const tuning = () => ChordLabTab.TUNINGS[state.tabTuning].midi;
+  const rowHeight = () => 230 - (6 - tuning().length) * 29;
+  const taskPath = (id, engine) => `/api/jobs/${id}/${isBass() ? "bass-analysis" : "guitar-analysis" + (engine === "basic_pitch" ? "" : `?engine=${engine}`)}`;
   let jobId = null,
     notes = [],
     rows = [],
@@ -19,8 +24,9 @@ const TabStudio = (() => {
   let scrollFrame = 0, taskTimer = null, manualScrollAt = 0, session = 0, editSerial = 0;
   const copy = (list) => list.map((note) => ({ ...note }));
   const context = () => ({
+    instrument: instrument(),
     tuning: state.tabTuning || "standard",
-    capo: state.capo,
+    capo: capo(),
     voice: $("#tabVoice").value,
     position: $("#tabPosition").value,
     density: state.tabDensity,
@@ -30,6 +36,25 @@ const TabStudio = (() => {
   const key = () => JSON.stringify(context());
 
   function bind() {
+    $("#tabInstrument").addEventListener("change", async () => {
+      const previous = instrument();
+      if (!canLeave()) {
+        $("#tabInstrument").value = previous;
+        return;
+      }
+      if (previous === "guitar") state.guitarTabEngine = state.tabEngine || "basic_pitch";
+      state.tabInstrument = $("#tabInstrument").value;
+      state.tabEngine = isBass() ? "basic_pitch" : state.guitarTabEngine || "basic_pitch";
+      $("#tabEngine").value = state.tabEngine;
+      state.tabCancel?.();
+      state.tabRender = (state.tabRender || 0) + 1;
+      reset(jobId);
+      configure(jobId);
+      state.tabJob = null;
+      state.tabSource = "unavailable";
+      state.tabNotes = [];
+      await loadContinuousTab();
+    });
     $("#tabEngine").addEventListener("change", async () => {
       const previous = state.tabEngine || "basic_pitch";
       if (!canLeave()) {
@@ -88,8 +113,8 @@ const TabStudio = (() => {
     $("#tabEditString").addEventListener("change", () => {
       const note = notes.find((n) => n.index === editIndex);
       if (!note) return;
-      const base = ChordLabTab.TUNINGS[state.tabTuning].midi[Number($("#tabEditString").value)] + state.capo;
-      $("#tabEditFret").value = String(Math.min(24 - state.capo, Math.max(0, note.midi - base)));
+      const base = tuning()[Number($("#tabEditString").value)] + capo();
+      $("#tabEditFret").value = String(Math.min(24 - capo(), Math.max(0, note.midi - base)));
       pitchLabel();
     });
     $("#tabEditFret").addEventListener("input", pitchLabel);
@@ -155,15 +180,53 @@ const TabStudio = (() => {
   function canLeave() {
     return !dirty || confirm("尚有未儲存的 TAB 修正，確定離開？");
   }
+  function configure(id) {
+    $("#tabInstrument").value = instrument();
+    $("#tabEngineOption").classList.toggle("hidden", isBass());
+    const select = $("#tabTuning");
+    select.replaceChildren();
+    for (const [name, definition] of Object.entries(ChordLabTab.TUNINGS)) {
+      if ((definition.instrument === "bass") !== isBass()) continue;
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = definition.label;
+      select.append(option);
+    }
+    const saved = localStorage.getItem(tabStorageKey("tuning", id));
+    state.tabTuning = [...select.options].some((option) => option.value === saved) ? saved : isBass() ? "bass_standard" : "standard";
+    select.value = state.tabTuning;
+    for (const [control, setting] of [["tabVoice", "voice"], ["tabPosition", "position"]]) {
+      const node = $("#" + control), value = localStorage.getItem(tabStorageKey(setting, id));
+      node.value = [...node.options].some((option) => option.value === value) ? value : node.options[0].value;
+    }
+    state.tabDensity = localStorage.getItem(tabStorageKey("density", id)) === "full" ? "full" : "clean";
+    $$("[data-tab-density]").forEach((button) => button.classList.toggle("active", button.dataset.tabDensity === state.tabDensity));
+    $("#guitarPreview").textContent = isBass() ? "試聽 Bass" : "試聽吉他";
+    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid"].includes(state.tabEngine));
+    updateInstrumentControls();
+  }
+  function updateInstrumentControls() {
+    $("#tabTitle").textContent = isBass() ? `Bass ${tuning().length === 5 ? "五" : "四"}線譜` : "吉他六線譜";
+    $("#tabDisclaimer").textContent = isBass() ? "弦／格數是推算；Bass 不使用吉他 Capo。修正與吉他譜分開儲存。" :
+      "弦／格數是推算；數字相對 Capo。編輯只儲存到你的帳號。";
+    const select = $("#tabEditString");
+    select.replaceChildren();
+    for (let string = tuning().length - 1; string >= 0; string--) {
+      const option = document.createElement("option");
+      option.value = String(string);
+      option.textContent = `第 ${tuning().length - string} 弦 · ${NOTE_NAMES[tuning()[string] % 12]}`;
+      select.append(option);
+    }
+  }
   function reconfigure() {
     if (!dirty || confirm("重新配置指法會捨棄尚未儲存的修正，確定繼續？")) return true;
     if (signature) {
       const previous = JSON.parse(signature);
       state.tabTuning = previous.tuning;
-      state.capo = previous.capo;
+      if (!isBass()) state.capo = previous.capo;
       state.tabDensity = previous.density;
       $("#tabTuning").value = previous.tuning;
-      $("#capoSelect").value = String(previous.capo);
+      if (!isBass()) $("#capoSelect").value = String(previous.capo);
       $("#tabVoice").value = previous.voice;
       $("#tabPosition").value = previous.position;
       $("#tabFingering").value = previous.fingering_mode || "model";
@@ -205,7 +268,7 @@ const TabStudio = (() => {
     $("#tabSource").textContent = "";
     $("#tabEngineMidi").classList.add("hidden");
     $("#tabEngineMidi").removeAttribute("href");
-    $("#tabFingeringOptions").classList.toggle("hidden", !["tabcnn", "hybrid"].includes(state.tabEngine));
+    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid"].includes(state.tabEngine));
     controls();
     $("#generateGuitarTab").classList.add("hidden");
     $("#guitarPreview").classList.add("hidden");
@@ -222,12 +285,13 @@ const TabStudio = (() => {
     const engine = state.tabEngine || "basic_pitch";
     setRhythm();
     const [personal, task] = await Promise.all([
-      api(`/api/jobs/${id}/tab`),
-      api(`/api/jobs/${id}/guitar-analysis${engine === "basic_pitch" ? "" : `?engine=${engine}`}`),
+      api(`/api/jobs/${id}/tab?instrument=${instrument()}`),
+      api(taskPath(id, engine)),
     ]);
     if (jobId !== id || expectedSession !== session) return;
     revision = personal.revision;
-    savedDocument = personal.document && (personal.document.source_engine || "basic_pitch") === engine ? personal.document : null;
+    savedDocument = personal.document && (personal.document.instrument || "guitar") === instrument() &&
+      (personal.document.source_engine || "basic_pitch") === engine ? personal.document : null;
     if (savedDocument) applyDocument(savedDocument);
     taskControls(task.status, task);
     if (["queued", "working"].includes(task.status) || task.busy_engine) pollTask(id, engine);
@@ -237,12 +301,13 @@ const TabStudio = (() => {
     loadedDocument = document;
     notes = copy(document.notes);
     state.tabTuning = document.tuning;
-    state.capo = document.capo;
+    if (!isBass()) state.capo = document.capo;
     state.tabDensity = document.density;
     $("#tabTuning").value = state.tabTuning;
     $("#tabVoice").value = document.voice;
     $("#tabPosition").value = document.position;
     $("#tabFingering").value = document.fingering_mode || "model";
+    updateInstrumentControls();
     $$("[data-tab-density]").forEach((button) =>
       button.classList.toggle("active", button.dataset.tabDensity === state.tabDensity)
     );
@@ -253,19 +318,19 @@ const TabStudio = (() => {
   }
   function taskControls(status, task = {}) {
     const result = state.current?.result,
-      source = state.current?.pure_guitar || result?.guitar_tab?.source === "original",
-      has = source || (result?.separation?.all_stems || result?.separation?.stems || []).includes("guitar");
+      source = !isBass() && (state.current?.pure_guitar || result?.guitar_tab?.source === "original"),
+      has = source || (result?.separation?.all_stems || result?.separation?.stems || []).includes(instrument());
     $("#guitarPreview").classList.toggle("hidden", !has);
     const button = $("#generateGuitarTab"),
       pending = has && (["pending", "queued", "working", "failed", "unavailable"].includes(status));
     button.classList.toggle("hidden", !pending || !state.current?.mine && !state.viewer?.admin);
     const engine = state.tabEngine || "basic_pitch";
-    const unavailable = task.variants?.find((variant) => variant.engine === engine)?.available === false;
+    const unavailable = isBass() ? task.available === false : task.variants?.find((variant) => variant.engine === engine)?.available === false;
     button.disabled = ["queued", "working"].includes(status) || !!task.busy_engine || unavailable;
     button.textContent =
       { pending: "產生 TAB", queued: "TAB 排隊中", working: "正在轉譜…", failed: "重試 TAB" }[status] ||
       "產生 TAB";
-    if (unavailable) button.textContent = "引擎尚未安裝";
+    if (unavailable) button.textContent = "目前無法轉錄";
     else if (task.busy_engine && task.busy_engine !== engine) button.textContent = "等待另一版本完成";
     for (const variant of task.variants || []) {
       const option = [...$("#tabEngine").options].find((option) => option.value === variant.engine);
@@ -273,37 +338,40 @@ const TabStudio = (() => {
     }
     const download = $("#tabEngineMidi");
     download.classList.toggle("hidden", status !== "done");
-    if (status === "done") download.href = `/api/jobs/${jobId}/guitar-midi/${engine}`;
+    if (status === "done") download.href = isBass() ? `/api/jobs/${jobId}/export/midi/bass` : `/api/jobs/${jobId}/guitar-midi/${engine}`;
     else download.removeAttribute("href");
   }
   async function generate() {
     const id = jobId;
     const engine = state.tabEngine || "basic_pitch";
+    const expectedSession = session;
     $("#generateGuitarTab").disabled = true;
     try {
-      const result = await api(`/api/jobs/${id}/guitar-analysis${engine === "basic_pitch" ? "" : `?engine=${engine}`}`, { method: "POST" });
-      if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
+      const result = await api(taskPath(id, engine), { method: "POST" });
+      if (jobId !== id || session !== expectedSession || (state.tabEngine || "basic_pitch") !== engine) return;
       taskControls(result.status);
       pollTask(id, engine);
       loadQueueStatus();
     } catch (error) {
-      if (jobId === id && (state.tabEngine || "basic_pitch") === engine) {
+      if (jobId === id && session === expectedSession && (state.tabEngine || "basic_pitch") === engine) {
         $("#generateGuitarTab").disabled = false;
         toast(error.message, true);
       }
     }
   }
   function pollTask(id, engine = state.tabEngine || "basic_pitch") {
+    const expectedSession = session;
+    const current = () => jobId === id && session === expectedSession && (state.tabEngine || "basic_pitch") === engine;
     clearTimeout(taskTimer);
     taskTimer = setTimeout(async () => {
-      if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
+      if (!current()) return;
       if (document.hidden) {
         pollTask(id, engine);
         return;
       }
       try {
-        const task = await api(`/api/jobs/${id}/guitar-analysis${engine === "basic_pitch" ? "" : `?engine=${engine}`}`);
-        if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine) return;
+        const task = await api(taskPath(id, engine));
+        if (!current()) return;
         taskControls(task.status, task);
         if (["queued", "working"].includes(task.status) || task.busy_engine) {
           pollTask(id, engine);
@@ -316,16 +384,16 @@ const TabStudio = (() => {
             loadQueueStatus();
             return;
           }
-          const current = await api(`/api/jobs/${id}?include_notes=false`);
-          if (jobId !== id || (state.tabEngine || "basic_pitch") !== engine || dirty || saving) return;
-          state.current = current;
+          const refreshed = await api(`/api/jobs/${id}?include_notes=false`);
+          if (!current() || dirty || saving) return;
+          state.current = refreshed;
           state.tabJob = null;
           await loadContinuousTab();
           renderStemDownloads();
           loadQueueStatus();
         }
       } catch (error) {
-        if (jobId === id && (state.tabEngine || "basic_pitch") === engine) {
+        if (current()) {
           toast(error.message, true);
           pollTask(id, engine);
         }
@@ -339,7 +407,7 @@ const TabStudio = (() => {
     state.resumeAfterMix = false;
     main.pause();
     $("#guitarPreviewPanel").classList.remove("hidden");
-    player.src = `/api/jobs/${id}/guitar-preview?start=${Math.floor(main.currentTime || 0)}`;
+    player.src = `/api/jobs/${id}/guitar-preview?start=${Math.floor(main.currentTime || 0)}&track=${instrument()}`;
     player.volume = state.volume;
     try {
       await player.play();
@@ -352,8 +420,9 @@ const TabStudio = (() => {
     if (!state.current?.result || jobId !== state.current.id) return;
     $("#fullTabPanel").classList.remove("hidden");
     if (state.resultView !== "tab" || state.page !== "workspace") return;
-    if (state.tabSource !== "guitar" && !loadedDocument) {
+    if (state.tabSource !== instrument() && !loadedDocument) {
       $("#continuousTab").innerHTML =
+        isBass() ? '<div class="tab-unavailable"><b>尚未產生 Bass 譜</b><span>有 Bass 分軌時，可先試聽再按「產生 TAB」。沒有 Bass 軌的歌曲需要重新選擇分軌分析。</span></div>' :
         `<div class="tab-unavailable"><b>尚未產生吉他譜</b><span>${state.current.pure_guitar || state.current.result.guitar_tab?.source === "original" ? "可直接從純吉他原音產生 TAB；若轉錄失敗，請按上方按鈕重試。" : "先試聽吉他音軌，再選「產生 TAB」。沒有吉他軌時，請重新選擇吉他分析。"}</span></div>`;
       return;
     }
@@ -376,6 +445,7 @@ const TabStudio = (() => {
       end: Math.min(n.end, state.current.duration),
     }));
     diagnostics = result.diagnostics || {};
+    diagnostics.omittedNotes = result.omittedCount || 0;
     signature = key();
     undo = [];
     dirty = false;
@@ -383,11 +453,12 @@ const TabStudio = (() => {
   }
   function rebuild() {
     if (!state.current?.result || jobId !== state.current.id) return;
+    updateInstrumentControls();
     if (!notes.length) {
       rows = [];
       windowStart = -1;
       $("#continuousTab").innerHTML =
-        '<div class="tab-unavailable"><b>目前沒有音符</b><span>可試聽吉他、調整設定，或用復原／原始譜找回刪除的音。</span></div>';
+        '<div class="tab-unavailable"><b>目前沒有音符</b><span>可試聽音軌、調整設定，或用復原／原始譜找回刪除的音。</span></div>';
       $("#tabNoteSummary").textContent = "0 音";
       controls();
       return;
@@ -408,6 +479,7 @@ const TabStudio = (() => {
     } 小節${rhythm.manual ? "" : "（估計）"}`;
     $("#tabSource").textContent = loadedDocument
       ? "我的版本"
+      : isBass() ? "Bass 分離軌"
       : state.tabEngine === "gaps" ? "GAPS · 實驗"
       : state.tabEngine === "tabcnn" ? "TabCNN · 實驗"
       : state.tabEngine === "hybrid" ? "整合 v2 · 實驗"
@@ -415,10 +487,11 @@ const TabStudio = (() => {
       ? "純吉他"
       : "吉他分離軌";
     const warning = [];
+    if (isBass() && diagnostics.omittedNotes) warning.push(`${diagnostics.omittedNotes} 音無法配置到目前弦格，可試 Drop D／五弦或檢查誤音`);
     const rhythmWarning = !rhythm.manual && !state.current.result.rhythm?.bpm
       ? `尚無拍點分析，暫以 ${rhythm.bpm} BPM 排版，可手動調整。`
       : "";
-    if (diagnostics.crowdedOnsets) warning.push(`${diagnostics.crowdedOnsets} 處超過六音`);
+    if (diagnostics.crowdedOnsets) warning.push(`${diagnostics.crowdedOnsets} 處超過 ${tuning().length} 音`);
     if (diagnostics.wideShapes) warning.push(`${diagnostics.wideShapes} 處跨度過大`);
     if (diagnostics.rapidShifts) warning.push(`${diagnostics.rapidShifts} 處快速跳把位`);
     const node = $("#tabWarnings");
@@ -439,7 +512,7 @@ const TabStudio = (() => {
         (gap.end - gap.start).toFixed(2)
       } 秒">休</span>`
     ).join("");
-    const strings = [5, 4, 3, 2, 1, 0].map((string) => {
+    const strings = Array.from({ length: tuning().length }, (_, i) => tuning().length - 1 - i).map((string) => {
       const events = row.notes.filter((note) => note.string === string);
       const tails = events.map((note) => {
         const left = position(Math.max(row.start, note.start)), right = position(Math.min(row.end, note.end));
@@ -450,13 +523,13 @@ const TabStudio = (() => {
           note.suspicious ? "suspect " : ""
         }${note.edited ? "edited" : ""}" style="left:${
           Math.min(98, Math.max(2, position(note.start)))
-        }%" title="${note.start.toFixed(2)}s · 第 ${6 - string} 弦 · ${note.fret} 格">${note.fret}</button>`
+        }%" title="${note.start.toFixed(2)}s · 第 ${tuning().length - string} 弦 · ${note.fret} 格">${note.fret}</button>`
       ).join("");
       return `<div class="tab-system-row"><b>${
-        NOTE_NAMES[ChordLabTab.TUNINGS[state.tabTuning].midi[string] % 12]
-      }<small>${6 - string}</small></b><div class="tab-system-string">${tails}${starts}</div></div>`;
+        NOTE_NAMES[tuning()[string] % 12]
+      }<small>${tuning().length - string}</small></b><div class="tab-system-string">${tails}${starts}</div></div>`;
     }).join("");
-    return `<section class="tab-system" data-tab-system="${index}"><header><span>小節 ${
+    return `<section class="tab-system" style="--tab-system-height:${rowHeight() - 11}px" data-tab-system="${index}"><header><span>小節 ${
       row.measures[0].number || "前奏"
     }${
       row.measures.length > 1 ? "–" + row.measures[row.measures.length - 1].number : ""
@@ -467,13 +540,13 @@ const TabStudio = (() => {
   function drawWindow() {
     if (state.resultView !== "tab" || !rows.length) return;
     const viewport = $("#tabFlowViewport"),
-      start = Math.max(0, Math.floor(viewport.scrollTop / ROW_HEIGHT) - 2);
-    const end = Math.min(rows.length, start + Math.ceil((viewport.clientHeight || 500) / ROW_HEIGHT) + 5);
+      start = Math.max(0, Math.floor(viewport.scrollTop / rowHeight()) - 2);
+    const end = Math.min(rows.length, start + Math.ceil((viewport.clientHeight || 500) / rowHeight()) + 5);
     if (start === windowStart) return;
     windowStart = start;
-    $("#continuousTab").innerHTML = `<div class="tab-spacer" style="height:${start * ROW_HEIGHT}px"></div>${
+    $("#continuousTab").innerHTML = `<div class="tab-spacer" style="height:${start * rowHeight()}px"></div>${
       rows.slice(start, end).map((row, i) => rowMarkup(row, start + i)).join("")
-    }<div class="tab-spacer" style="height:${(rows.length - end) * ROW_HEIGHT}px"></div>`;
+    }<div class="tab-spacer" style="height:${(rows.length - end) * rowHeight()}px"></div>`;
     activeRow = -1;
   }
   function update() {
@@ -481,9 +554,9 @@ const TabStudio = (() => {
     const player = $("#audioPlayer"),
       index = Math.max(0, Math.min(rows.length - 1, ChordLabLayout.locate(rows, player.currentTime)));
     if (!player.paused && $("#tabFollow").checked && performance.now() - manualScrollAt > 5000) {
-      const viewport = $("#tabFlowViewport"), top = index * ROW_HEIGHT;
-      if (top < viewport.scrollTop || top + ROW_HEIGHT > viewport.scrollTop + viewport.clientHeight) {
-        viewport.scrollTop = Math.max(0, top - ROW_HEIGHT);
+      const viewport = $("#tabFlowViewport"), top = index * rowHeight();
+      if (top < viewport.scrollTop || top + rowHeight() > viewport.scrollTop + viewport.clientHeight) {
+        viewport.scrollTop = Math.max(0, top - rowHeight());
         drawWindow();
       }
     }
@@ -502,7 +575,7 @@ const TabStudio = (() => {
   function controls() {
     $("#tabSave").disabled = !dirty || saving;
     $("#tabUndo").disabled = !undo.length;
-    $("#tabOriginal").disabled = state.tabSource !== "guitar" && !savedDocument;
+    $("#tabOriginal").disabled = state.tabSource !== instrument() && !savedDocument;
     $("#tabOriginal").textContent = !loadedDocument && !dirty && savedDocument ? "我的版本" : "原始譜";
     $("#tabEditMode").disabled = !notes.length;
     $("#tabSaveStatus").textContent = saving ? "儲存中…" : dirty ? "未儲存" : revision ? "已儲存" : "";
@@ -516,14 +589,14 @@ const TabStudio = (() => {
   function openEditor(note) {
     editIndex = note.index;
     $("#tabEditString").value = String(note.string);
-    $("#tabEditFret").max = String(24 - state.capo);
+    $("#tabEditFret").max = String(24 - capo());
     $("#tabEditFret").value = String(note.fret);
     $("#tabEditInfo").textContent = `${note.start.toFixed(2)} 秒 · 改弦時會優先保留音高`;
     pitchLabel();
     $("#tabNoteDialog").showModal();
   }
   function pitchLabel() {
-    const midi = ChordLabTab.TUNINGS[state.tabTuning].midi[Number($("#tabEditString").value)] + state.capo +
+    const midi = tuning()[Number($("#tabEditString").value)] + capo() +
       Number($("#tabEditFret").value);
     $("#tabEditPitch").textContent = `音高 ${NOTE_NAMES[(midi + 120) % 12]}${
       Math.floor(midi / 12) - 1
@@ -534,7 +607,7 @@ const TabStudio = (() => {
     const note = notes.find((n) => n.index === editIndex);
     if (!note) return;
     const string = Number($("#tabEditString").value), fret = Number($("#tabEditFret").value);
-    if (!Number.isInteger(fret) || fret < 0 || fret + state.capo > 24) return;
+    if (!Number.isInteger(string) || string < 0 || string >= tuning().length || !Number.isInteger(fret) || fret < 0 || fret + capo() > 24) return;
     if (
       notes.some((n) =>
         n.index !== note.index && n.string === string && n.start < note.end && n.end > note.start
@@ -546,7 +619,7 @@ const TabStudio = (() => {
     remember();
     note.string = string;
     note.fret = fret;
-    note.midi = ChordLabTab.TUNINGS[state.tabTuning].midi[string] + state.capo + fret;
+    note.midi = tuning()[string] + capo() + fret;
     note.edited = true;
     note.suspicious = false;
     dirty = true;
@@ -560,7 +633,7 @@ const TabStudio = (() => {
     controls();
     const document = { revision, notes: copy(notes), ...context(), rhythm: { ...rhythm } };
     try {
-      const result = await api(`/api/jobs/${id}/tab`, {
+      const result = await api(`/api/jobs/${id}/tab?instrument=${instrument()}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(document),
@@ -584,6 +657,7 @@ const TabStudio = (() => {
   }
   return {
     bind,
+    configure,
     reset,
     load,
     render,

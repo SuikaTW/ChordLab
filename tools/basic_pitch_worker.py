@@ -103,7 +103,9 @@ def main() -> None:
     parser.add_argument("audio")
     parser.add_argument("output")
     parser.add_argument("midi")
-    parser.add_argument("--guitar", action="store_true", help="Preserve short guitar plucks and constrain the pitch range")
+    instruments = parser.add_mutually_exclusive_group()
+    instruments.add_argument("--guitar", action="store_true", help="Preserve short guitar plucks and constrain the pitch range")
+    instruments.add_argument("--bass", action="store_true", help="Bass pitch range, including low B; retain repeated plucks")
     args = parser.parse_args()
     options = {}
     if args.guitar:
@@ -113,13 +115,25 @@ def main() -> None:
             "minimum_frequency": 440 * 2 ** ((36 - 69) / 12),
             "maximum_frequency": 440 * 2 ** ((99 - 69) / 12),
         }
+    elif args.bass:
+        options = {
+            "minimum_note_length": 60.0,
+            "onset_threshold": 0.5,
+            "minimum_frequency": 440 * 2 ** ((23 - 69) / 12),
+            "maximum_frequency": 440 * 2 ** ((67 - 69) / 12),
+        }
     model_output, midi_data, note_events = predict(args.audio, **options)
     del model_output
+    if args.bass and len(note_events) > 20000:
+        raise ValueError("Too many Bass note events")
+    if args.bass:
+        for instrument in midi_data.instruments:
+            instrument.program = 33  # GM fingered electric bass, zero-based.
     midi_data.write(args.midi)
     duration = max((float(event[1]) for event in note_events), default=0.0)
     payload = {
         "engine": "basic_pitch",
-        "profile": "guitar_v2" if args.guitar else "general",
+        "profile": "guitar_v2" if args.guitar else "bass_v1" if args.bass else "general",
         "duration": round(duration, 3),
         "note_count": len(note_events),
         "notes": [

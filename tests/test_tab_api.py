@@ -49,6 +49,129 @@ class TabApiTests(unittest.TestCase):
     def put(self, payload):
         return self.client.put("/api/jobs/song/tab", json=payload, headers={"Origin": "http://testserver"})
 
+    def add_bass(self):
+        self.result["separation"]["stems"].append("bass")
+        (self.directory / "stems/bass.wav").write_bytes(b"bass-audio")
+        with main.db() as c:
+            c.execute("UPDATE jobs SET result=?", (json.dumps(self.result),))
+
+    def bass_document(self):
+        return {"instrument": "bass", "tuning": "bass_standard", "revision": 0,
+            "notes": [{"index": 0, "start": 0, "end": 1, "midi": 28, "string": 0, "fret": 0}]}
+
+    def put_bass(self, document):
+        return self.client.put("/api/jobs/song/tab?instrument=bass", json=document, headers={"Origin": "http://testserver"})
+
+    def test_bass_and_legacy_guitar_versions_have_independent_private_revisions(self):
+        self.assertEqual(self.put(self.document).status_code, 200)
+        self.assertEqual(self.put_bass(self.bass_document()).status_code, 200)
+        self.assertEqual(self.put_bass(self.bass_document()).status_code, 409)
+        guitar = self.client.get("/api/jobs/song/tab").json()
+        bass = self.client.get("/api/jobs/song/tab?instrument=bass").json()
+        self.assertEqual(guitar["revision"], bass["revision"])
+        self.assertEqual(guitar["document"]["notes"][0]["midi"], 64)
+        self.assertEqual(bass["document"]["notes"][0]["midi"], 28)
+        self.login("bob@example.com")
+        self.assertIsNone(self.client.get("/api/jobs/song/tab?instrument=bass").json()["document"])
+        self.assertEqual(self.put_bass(self.bass_document()).status_code, 200)
+
+    def test_bass_validation_rejects_guitar_settings_and_nonexistent_strings(self):
+        bass = self.bass_document()
+        for wrong in [{"capo": 2}, {"source_engine": "hybrid"}, {"tuning": "standard"}]:
+            self.assertEqual(self.put_bass({**bass, **wrong}).status_code, 422)
+        wrong = {**bass, "notes": [{**bass["notes"][0], "string": 4}]}
+        self.assertEqual(self.put_bass(wrong).status_code, 422)
+        self.assertEqual(self.put(bass).status_code, 400)
+        self.assertEqual(self.client.get("/api/jobs/song/tab?instrument=../bass").status_code, 422)
+        five = {**bass, "tuning": "bass_five", "notes": [{**bass["notes"][0], "midi": 23}]}
+        self.assertEqual(self.put_bass(five).status_code, 200)
+
+    def test_bass_generation_owner_queue_restart_and_concurrent_edit_preservation(self):
+        self.add_bass()
+        headers = {"Origin": "http://testserver"}
+        self.login("bob@example.com")
+        self.assertEqual(self.client.post("/api/jobs/song/bass-analysis", headers=headers).status_code, 404)
+        self.login("alice@example.com")
+        self.assertEqual(self.client.post("/api/jobs/song/bass-analysis").status_code, 403)
+        self.assertEqual(self.client.post("/api/jobs/song/bass-analysis", headers=headers).json()["status"], "queued")
+        self.assertEqual(self.client.post("/api/jobs/song/bass-analysis", headers=headers).json()["status"], "queued")
+        self.assertEqual(self.client.post("/api/jobs/song/guitar-analysis", headers=headers).status_code, 409)
+        with main.db() as c:
+            c.execute("UPDATE guitar_tasks SET status='working'")
+        with patch.object(main, "USERNAME", "test"), patch.object(main, "PASSWORD", "test"), patch.object(main, "STORAGE_MOUNT", None):
+            main.startup()
+        with main.db() as c:
+            self.assertEqual(tuple(c.execute("SELECT engine,status FROM guitar_tasks").fetchone()), ("bass", "queued"))
+        def fake_command(command, **kwargs):
+            self.assertIn("--bass", command)
+            self.assertIn(str(self.directory / "stems/bass.wav"), command)
+            Path(command[3]).write_text(json.dumps({"profile": "bass_v1", "notes": [{"start": 0, "end": 1, "midi": 28}]}))
+            Path(command[4]).write_bytes(b"MThd")
+            with main.db() as c:
+                result = {**self.result, "key": {"label": "manual key"},
+                    "methods": {"chordino": [{"start": 0, "end": 10, "chord": "Dm"}]}}
+                c.execute("UPDATE jobs SET result=?", (json.dumps(result),))
+        with patch.object(main, "run_command", side_effect=fake_command):
+            main.process_guitar_task("song")
+        self.assertEqual(self.client.get("/api/jobs/song/bass-analysis").json()["status"], "done")
+        self.assertEqual(self.client.get("/api/jobs/song/notes/bass").json()["profile"], "bass_v1")
+        with main.db() as c:
+            result = json.loads(c.execute("SELECT result FROM jobs").fetchone()[0])
+        self.assertEqual(result["methods"]["chordino"][0]["chord"], "Dm")
+        self.assertEqual(result["key"]["label"], "manual key")
+        self.assertEqual(result["guitar_tab"], self.result["guitar_tab"])
+
+    def test_existing_bass_midi_reused_without_queue_or_file_changes(self):
+        self.add_bass()
+        directory = self.directory / "stem-midi"
+        directory.mkdir()
+        (directory / "bass.json").write_text('{"profile":"general","notes":[{"midi":28}]}')
+        (directory / "bass.mid").write_bytes(b"original-midi")
+        self.result["separation"]["midi_stems"].append("bass")
+        with main.db() as c:
+            c.execute("UPDATE jobs SET result=?", (json.dumps(self.result),))
+        response = self.client.post("/api/jobs/song/bass-analysis", headers={"Origin": "http://testserver"})
+        self.assertEqual(response.json()["status"], "done")
+        self.assertEqual(main.executor.submit.call_count, 0)
+        self.assertEqual((directory / "bass.mid").read_bytes(), b"original-midi")
+
+    def test_bass_failure_nonfatal_missing_source_and_preview_caches_separate(self):
+        self.assertEqual(self.client.get("/api/jobs/song/bass-analysis").json()["status"], "unavailable")
+        self.assertEqual(self.client.post("/api/jobs/song/bass-analysis", headers={"Origin": "http://testserver"}).status_code, 400)
+        self.add_bass()
+        self.client.post("/api/jobs/song/bass-analysis", headers={"Origin": "http://testserver"})
+        with patch.object(main, "run_command", side_effect=RuntimeError("bass failure")):
+            main.process_guitar_task("song")
+        self.assertEqual(self.client.get("/api/jobs/song/bass-analysis").json()["status"], "failed")
+        self.assertEqual(self.client.get("/api/jobs/song").json()["status"], "done")
+        def fake_preview(command, **kwargs):
+            Path(command[-1]).write_bytes(b"m4a")
+        with patch.object(main, "run_command", side_effect=fake_preview) as command:
+            self.assertEqual(self.client.get("/api/jobs/song/guitar-preview?track=bass").status_code, 200)
+            self.assertEqual(self.client.get("/api/jobs/song/guitar-preview").status_code, 200)
+            self.assertEqual(command.call_count, 2)
+        self.assertTrue((self.directory / "bass-preview-0.m4a").exists())
+        self.assertTrue((self.directory / "guitar-preview-0.m4a").exists())
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-preview?track=../bass").status_code, 422)
+
+    def test_bass_uses_shared_daily_active_limits_and_deletion_cascades(self):
+        self.add_bass()
+        headers = {"Origin": "http://testserver"}
+        with patch.object(main, "DAILY_JOB_LIMIT", 1):
+            self.assertEqual(self.client.post("/api/jobs/song/bass-analysis", headers=headers).status_code, 202)
+            self.assertEqual(self.client.get("/api/queue").json()["waiting"], 1)
+            with patch.object(main, "MAX_ACTIVE_PER_USER", 1):
+                self.assertEqual(self.client.post("/api/jobs", data={"url": "https://youtu.be/9GIRqZfa1Gg"}, headers=headers).status_code, 429)
+            with main.db() as c:
+                c.execute("UPDATE guitar_tasks SET status='failed'")
+            self.assertEqual(self.client.post("/api/jobs/song/guitar-analysis", headers=headers).status_code, 429)
+        self.assertEqual(self.put(self.document).status_code, 200)
+        self.assertEqual(self.put_bass(self.bass_document()).status_code, 200)
+        with main.db() as c:
+            c.execute("DELETE FROM jobs WHERE id='song'")
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM user_tabs").fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM user_bass_tabs").fetchone()[0], 0)
+
     def test_personal_versions_are_private_and_do_not_change_shared_result(self):
         self.assertEqual(self.put(self.document).status_code, 200)
         self.assertEqual(self.client.get("/api/jobs/song/tab").json()["revision"], 1)

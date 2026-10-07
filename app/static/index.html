@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=19">
+  <link rel="stylesheet" href="/static/style.css?v=20">
 </head>
 <body>
   <header class="topbar">
@@ -83,7 +83,7 @@
 
           <nav class="result-tabs" aria-label="分析內容">
             <button class="active" data-result-view="chords"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h13"/></svg>和弦</button>
-            <button data-result-view="tab"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>吉他 TAB</button>
+            <button data-result-view="tab"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>樂器 TAB</button>
             <button id="lyricsResultTab" class="hidden" data-result-view="lyrics"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>歌詞</button>
           </nav>
 
@@ -113,8 +113,8 @@
           </div>
 
           <section id="fullTabPanel" class="full-tab-panel result-hidden hidden" data-result-panel="tab">
-            <div class="panel-title"><div><h3>吉他六線譜</h3></div><span id="tabSource" class="save-state"></span></div>
-            <div class="tab-settings"><label>辨識 <select id="tabEngine"><option value="basic_pitch">原版</option><option value="gaps">GAPS 音符（實驗）</option><option value="tabcnn">TabCNN 弦位（實驗）</option><option value="hybrid">整合 TAB v2（實驗）</option></select></label><a id="tabEngineMidi" class="text-button hidden">下載此版本 MIDI</a></div>
+            <div class="panel-title"><div><h3 id="tabTitle">吉他六線譜</h3></div><span id="tabSource" class="save-state"></span></div>
+            <div class="tab-settings"><label>樂器 <select id="tabInstrument"><option value="guitar">吉他</option><option value="bass">Bass</option></select></label><label id="tabEngineOption">辨識 <select id="tabEngine"><option value="basic_pitch">原版</option><option value="gaps">GAPS 音符（實驗）</option><option value="tabcnn">TabCNN 弦位（實驗）</option><option value="hybrid">整合 TAB v2（實驗）</option></select></label><a id="tabEngineMidi" class="text-button hidden">下載此版本 MIDI</a></div>
             <div class="tab-toolbar"><button id="guitarPreview" type="button" class="secondary">試聽吉他</button><button id="generateGuitarTab" type="button" class="primary compact hidden">產生 TAB</button><label class="mini-check"><input id="tabEditMode" type="checkbox">編輯</label><button id="tabSave" type="button" class="secondary" disabled>儲存我的版本</button><button id="tabUndo" type="button" class="text-button" disabled>復原</button><button id="tabOriginal" type="button" class="text-button">原始譜</button><span id="tabSaveStatus" role="status"></span></div>
             <div id="guitarPreviewPanel" class="guitar-preview hidden"><audio id="guitarPreviewPlayer" controls preload="none" playsinline></audio><small>20 秒吉他片段</small></div>
             <p id="tabWarnings" class="tab-warnings hidden" role="status"></p>
@@ -127,7 +127,7 @@
             </details>
             <div class="tab-view-options"><span id="tabNoteSummary" role="status"></span><label class="mini-check"><input id="tabFollow" type="checkbox" checked>跟隨播放</label></div>
             <div id="tabFlowViewport" class="tab-flow-viewport"><div id="continuousTab" class="continuous-tab"></div></div>
-            <p class="voicing-notes">弦／格數是推算；數字相對 Capo。編輯只儲存到你的帳號。</p>
+            <p id="tabDisclaimer" class="voicing-notes">弦／格數是推算；數字相對 Capo。編輯只儲存到你的帳號。</p>
           </section>
 
           <section id="lyricsPanel" class="lyrics-panel result-hidden hidden" data-result-panel="lyrics">
@@ -146,10 +146,10 @@
   </main>
   <div id="toast" class="toast" role="status"></div>
   <dialog id="tabNoteDialog"><form id="tabNoteForm"><h3>修正音符</h3><p id="tabEditInfo"></p><div class="time-fields"><label>弦<select id="tabEditString"><option value="5">第 1 弦</option><option value="4">第 2 弦</option><option value="3">第 3 弦</option><option value="2">第 4 弦</option><option value="1">第 5 弦</option><option value="0">第 6 弦</option></select></label><label>格數<input id="tabEditFret" type="number" min="0" max="24" step="1" required></label></div><p id="tabEditPitch"></p><div class="editor-actions"><button id="tabDeleteNote" type="button" class="danger-text">刪除</button><button id="tabCloseDialog" type="button" class="text-button">取消</button><button type="submit" class="secondary">套用</button></div></form></dialog>
-  <script src="/static/tab-engine.js?v=6" defer></script>
+  <script src="/static/tab-engine.js?v=7" defer></script>
   <script src="/static/tab-layout.js?v=2" defer></script>
-  <script src="/static/tab-studio.js?v=6" defer></script>
+  <script src="/static/tab-studio.js?v=8" defer></script>
   <script src="/static/chord-theory.js?v=1" defer></script>
-  <script src="/static/app.js?v=33" defer></script>
+  <script src="/static/app.js?v=34" defer></script>
 </body>
 </html>
