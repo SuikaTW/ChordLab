@@ -40,6 +40,9 @@ def run():
         assert current.get("key")==before.get("key") and current.get("active_method")==before.get("active_method")
         payload=client.get(f"/api/jobs/{args.job}/notes/guitar?engine=event_verified").json()
         assert payload["profile"]=="guitar_event_verified_v1" and payload["note_count"]==len(payload["notes"])
+        if args.generate:
+            assert payload['recommendation']['revision']==main.RECOMMENDATION_REVISION
+            assert payload['event_review']['version']==2
         assert client.get(f"/api/jobs/{args.job}/guitar-midi/event_verified").content.startswith(b"MThd")
         preview=client.get(f"/api/jobs/{args.job}/verification-preview?engine=event_verified",headers={"Range":"bytes=0-31"})
         assert preview.status_code==206 and preview.content.startswith(b"RIFF")
@@ -47,6 +50,6 @@ def run():
     with main.db() as connection:
         assert [tuple(row) for row in connection.execute("SELECT viewer,revision,document FROM user_tabs WHERE job_id=?",(args.job,))]==private_before
     print(args.job,"raw files/manual versions/chords/Key preserved; MIDI and seekable preview passed",flush=True)
-    print({k:payload["event_review"][k] for k in ("added_notes","adjusted_onsets","review_candidates","original_mix_checked")},flush=True)
+    print({k:payload["event_review"].get(k) for k in ("added_notes","adjusted_onsets","adjusted_offsets","retrigger_splits","uncertain_additions","review_candidates","original_mix_checked")},flush=True)
 
 if __name__=="__main__": run()

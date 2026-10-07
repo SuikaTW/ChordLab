@@ -50,6 +50,18 @@
     return Math.max(0, span - 4) ** 2 * 1.5;
   }
 
+  function phraseBeam(candidates, width, start) {
+    const unique = new Map();
+    for (const candidate of candidates.sort((a, b) => a.cost - b.cost)) {
+      const key = `${candidate.position}:` + candidate.active.map((note) =>
+        note && note.end > start + .025 ? `${note.midi}/${note.fret}/${Math.round(note.end * 100)}` : "-").join(",") +
+        ":" + candidate.placed.map((note) => `${note.midi}/${note.string}`).join(",");
+      if (!unique.has(key)) unique.set(key, candidate);
+      if (unique.size === width) break;
+    }
+    return [...unique.values()];
+  }
+
   function assign(notes, options = {}) {
     const clean = options.density !== "full";
     const bass = options.instrument === "bass" || !options.instrument && TUNINGS[options.tuning]?.instrument === "bass";
@@ -105,6 +117,10 @@
           for (let string = 0; string < stringCount; string++) {
             const fret = note.midi - tuning[string] - capo;
             if (fret < 0 || fret + capo > 24 || candidate.used.has(string)) continue;
+            const manual = note.edited && Number.isInteger(note.string) && Number.isInteger(note.fret) &&
+              note.string >= 0 && note.string < stringCount && note.fret >= 0 && note.fret + capo <= 24 &&
+              tuning[note.string] + capo + note.fret === note.midi;
+            if (manual && string !== note.string) continue;
             const placedNote = { ...note, string, fret };
             const placed = [...candidate.placed, placedNote];
             const old = candidate.active[string];
@@ -130,9 +146,17 @@
               3 * (Math.max(...alternatives.map((item) => item.score)) - support) :
               validHint && string !== note.model_string ?
                 3 * Math.max(0, Math.min(1, Number(note.fingering_score) || 0)) : 0;
-            const cost = candidate.cost + fret * .025 + movement + crossing * 3 +
+            // Preserve audible sustains (including open strings) when another
+            // playable string exists. This is soft: bad model lengths must not
+            // prevent a later pitch from appearing at all.
+            const sustainCost = overlap && old.midi !== note.midi ?
+              .7 + Math.min(3, Math.max(0, old.end - note.start - .05) * 3) : 0;
+            const melody = candidate.parent.placed.length === 1 && pitches.length === 1 ? candidate.parent.placed[0] : null;
+            const connected = melody && note.start - melody.start <= .3 && Math.abs(note.midi - melody.midi) <= 5;
+            const continuity = !bass && connected ? Math.abs(string - melody.string) * .15 : 0;
+            const cost = candidate.cost + fret * .025 + movement + crossing * 3 + continuity +
               preference + hintCost + spanCost(placed) - spanCost(candidate.placed) +
-              (overlap && old.midi !== note.midi ? .7 : 0);
+              sustainCost;
             const active = [...candidate.active];
             active[string] = placedNote;
             const used = new Set(candidate.used);
@@ -147,8 +171,11 @@
         const position = frets.length ? frets[Math.floor(frets.length / 2)] : candidate.position;
         const gap = group.start - (candidate.parent.placed[0]?.start ?? group.start);
         const shiftCost = Math.abs(position - candidate.parent.position) * (gap > .8 ? .04 : .18);
-        return { ...candidate, position, cost: candidate.cost + shiftCost };
-      }).sort((a, b) => a.cost - b.cost).slice(0, width);
+        const held = candidate.active.filter((note) => note && note.end > group.start + .04);
+        const sustainSpan = Math.max(0, spanCost(held) - spanCost(candidate.placed)) * .6;
+        return { ...candidate, position, cost: candidate.cost + shiftCost + sustainSpan };
+      });
+      beam = phraseBeam(beam, width, group.start);
       // Normalize accumulated costs to keep long songs numerically stable.
       const floor = beam[0].cost;
       beam.forEach((candidate) => {
@@ -162,6 +189,7 @@
       crowdedOnsets: groups.filter((group) => group.notes.length > stringCount).length,
       wideShapes: 0,
       rapidShifts: 0,
+      sustainConflicts: 0,
     };
     let previousShape = null;
     for (const placed of chunks) {
@@ -188,7 +216,10 @@
     const lastByString = Array(stringCount).fill(null);
     for (const note of assigned) {
       const previous = lastByString[note.string];
-      if (previous && previous.end > note.start) previous.end = note.start;
+      if (previous && previous.end > note.start) {
+        if (previous.end > note.start + .08 && previous.midi !== note.midi) diagnostics.sustainConflicts++;
+        previous.end = note.start;
+      }
       lastByString[note.string] = note;
     }
     const selectedCount = groups.reduce((count, group) => count + group.notes.length, 0);

@@ -581,11 +581,11 @@ const TabStudio = (() => {
     if (verified) summary.textContent = `校驗 ${verified.reviewed_notes} 音 · 調整 ${verified.changed_notes} 音 · ${verified.uncertain_notes} 音仍有疑點。${verified.calibrated_pitches ? `使用 ${verified.calibrated_pitches} 個私人校準音高。` : ""}音頻相似度不是正確率；原版與你的修正保留。`;
     if (verified?.version === 2) summary.textContent = `${verified.independent_models.length} 個音符模型 · ${verified.chord_sources.length} 種和弦證據 · ${verified.conflict_notes} 處交叉疑點 · 調整 ${verified.changed_notes} 音。和弦只作提示，原版保留；相似度不等於正確率。`;
     const events = state.tabEventReview;
-    if (state.tabEngine === "event_verified" && events) summary.textContent += ` 補 ${events.added_notes} 音 · 調整起音 ${events.adjusted_onsets} 處 · ${events.review_candidates} 處待確認${events.original_mix_checked ? " · 已回查原曲" : ""}。重複樂句僅作提示，不自動複製或訓練。`;
+    if (state.tabEngine === "event_verified" && events) summary.textContent += ` 補 ${events.added_notes} 音 · 起音 ${events.adjusted_onsets}／音長 ${events.adjusted_offsets || 0}／重撥 ${events.retrigger_splits || 0} 處修正 · ${events.review_candidates} 處待確認${events.original_mix_checked ? " · 已回查原曲" : ""}。`;
     const eventBox = $("#eventReviewCandidates");
     eventBox.replaceChildren();
     const reviewItems = state.tabEngine === "event_verified" && events ? [
-      ...(events.suggestions || []).slice(0, 12).map((item) => ({ start: item.start, label: item.kind === "possible_retrigger" ? "疑似重新撥弦" : "疑似假音" })),
+      ...(events.suggestions || []).slice(0, 12).map((item) => ({ start: item.start, label: item.kind === "possible_retrigger" ? "疑似重新撥弦" : item.kind === "uncertain_addition" ? "補音證據不足" : "疑似假音" })),
       ...(events.repeat_evidence?.examples || []).slice(0, 4).flatMap((item) => item.occurrences.slice(0, 3).map((start) => ({ start, label: "重複樂句" }))),
     ] : [];
     $("#eventReviewPanel").classList.toggle("hidden", isBass() || !reviewItems.length);

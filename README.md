@@ -48,11 +48,17 @@ start another analysis. Raw variants remain in a closed advanced comparison;
 saved personal scores take priority. Input fingerprints flag stale recommendations
 for explicit refresh. Every original analysis and personal edit is preserved.
 It combines cross-model pitch verification with
-bounded onset repairs and missing-note additions. Additions need two independent
+bounded onset/offset repairs, independently supported retrigger splits and missing-note additions. Additions need two independent
 model families, an audio transient, fundamentals in two windows and a spectral
 fit gain, followed by a final recheck. A full mix is confirmation/veto, not another
 guitar-model vote. Suspected false notes, retriggers and repeated phrases remain
-clickable review hints: no automatic deletion, sustain splitting, copying or training.
+clickable review hints: no automatic deletion, phrase copying or training. Offsets
+need two agreeing model endpoints and an audible pitch-envelope drop; retrigger
+splits need a transient and pitch-energy rise and never affect manual events.
+Four-window complexity-penalized addition evidence is advisory: the tested strict
+gate lost true notes, so it is not the default selection rule. Phrase fingering
+search preserves sustains and valid manual choices, considers held hand spans and
+melodic continuity, and deduplicates future states without guessing techniques.
 
 `tools/reference_corpus.py` explicitly downloads the checksum-pinned **GuitarSet
 v1.1.0** microphone audio and JAMS archives, selects six clips by performer/style,
@@ -70,7 +76,10 @@ comparisons. **Existing models may have trained on GuitarSet: this is regression
 coverage, not an independent blind test.** The initial six-clip pilot covers one
 Bossa Nova piece, not broad genre accuracy. Internet scores need recording/version,
 tuning/capo, licensing and alignment review before becoming trusted references.
-Predictions never become reference labels. See the Chinese README for commands.
+Predictions never become reference labels. `--reuse-raw-report` explicitly reuses
+checksum-verified raw predictions for controlled postprocessing comparisons;
+reports retain provenance and reject mid-run inference-code changes. See the
+Chinese README for commands.
 
 ## Bass TAB
 

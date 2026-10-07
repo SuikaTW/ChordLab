@@ -4,7 +4,7 @@ from functools import lru_cache
 import hashlib
 import json
 
-RECOMMENDATION_REVISION = 2
+RECOMMENDATION_REVISION = 3
 
 ENGINES = {
     "basic_pitch": {"label": "原版", "profile": "guitar_v2", "file": "guitar"},

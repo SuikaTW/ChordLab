@@ -34,8 +34,10 @@ def run():
             assert page.locator("#tabEngineMidi").get_attribute("href").endswith(engine)
             if engine=="event_verified":
                 assert "補" in page.locator("#verificationSummary").inner_text()
-                page.evaluate("async () => {state.tabEventReview.suggestions=[{kind:'possible_false_note',start:3}]; await TabStudio.render();}")
+                page.evaluate("async () => {Object.assign(state.tabEventReview,{adjusted_offsets:4,retrigger_splits:2,suggestions:[{kind:'uncertain_addition',start:3}]}); await TabStudio.render();}")
+                assert '音長 4／重撥 2' in page.locator('#verificationSummary').inner_text()
                 page.locator("#eventReviewPanel summary").click()
+                assert '補音證據不足' in page.locator('#eventReviewCandidates button').first.inner_text()
                 page.locator("#eventReviewCandidates button").first.click()
                 assert abs(page.locator("#audioPlayer").evaluate("p=>p.currentTime")-2.8)<.05
             page.locator("#continuousTab .tab-system").first.wait_for()
@@ -53,12 +55,19 @@ def run():
             assert "原和弦" in page.locator("#selectedChord").inner_text()
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth+1")
             worker=page.evaluate("""() => new Promise((resolve,reject) => {
-              const w=new Worker('/static/tab-worker.js?v=8');
+              const w=new Worker('/static/tab-worker.js?v=9');
               w.onmessage=e=>{w.terminate();resolve(e.data)};
               w.onerror=e=>{w.terminate();reject(new Error(e.message))};
               w.postMessage({notes:[{start:0,end:.5,midi:64,velocity:.7}],options:{position:'high'}});
             })""")
             assert worker["result"]["notes"][0]["fret"]==0, "Worker must use the open-string fix, not cached v7"
+            phrase=page.evaluate("""() => new Promise((resolve,reject) => {
+              const w=new Worker('/static/tab-worker.js?v=9');
+              w.onmessage=e=>{w.terminate();resolve(e.data)};
+              w.onerror=e=>{w.terminate();reject(new Error(e.message))};
+              w.postMessage({notes:[{start:0,end:1.5,midi:64,velocity:.7},{start:.2,end:.38,midi:65,velocity:.7},{start:.4,end:.8,midi:67,velocity:.7}],options:{}});
+            })""")
+            assert len(phrase['result']['notes'])==3 and phrase['result']['notes'][0]['end']==1.5, 'Live worker must preserve the open sustain'
             # Simulate disagreement to exercise candidate/marker controls without a save.
             page.evaluate("const s=chords()[state.selected]; s.refinement={uncertain:true,alternatives:[{chord:'Am',share:1}],source:'cross_verified'}; renderTimeline(); renderEditor();")
             assert page.locator("#chordCandidates").is_visible()

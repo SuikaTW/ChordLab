@@ -9,6 +9,19 @@ from collections import defaultdict
 import numpy as np
 from scipy.signal import find_peaks
 from tools.audio_verification import SR, FREQ, spectrum, template, fit, validate
+from tools.temporal_verification import PitchEnvelope, harmonic_conflict, refine_offsets, split_retrigger
+
+
+def verification_centers(start, end):
+    # Later windows are an out-of-early-window confirmation, not extra votes.
+    return sorted(set(start + min(delta, (end-start)*fraction)
+                      for delta, fraction in ((.06,.2),(.11,.4),(.18,.65),(.25,.85))))
+
+
+def addition_gain(before, after, voices):
+    # An extra spectral component always makes NNLS fit no worse. Charge for
+    # that complexity and demand improvement in every independent time window.
+    return before-after > max(.09 + .02*voices, before*.22)
 
 
 def attacks(samples):
@@ -63,6 +76,8 @@ def refine_events(samples, notes, cross, original=None):
     output = [dict(note) for note in notes]
     peaks = attacks(samples)
     dictionary = {pitch:template(pitch) for pitch in range(36,100)}
+    envelope = PitchEnvelope(samples)
+    original_envelope = PitchEnvelope(original) if original is not None else None
     edits, suggestions = [], []
     def has_attack(start):
         at = bisect.bisect_left(peaks,start-.06)
@@ -104,10 +119,10 @@ def refine_events(samples, notes, cross, original=None):
         if matches and note["start"]-matches[-1][0] <= .035:
             matches[-1][1].setdefault(family,note)
         else: matches.append((note["start"],{family:note}))
-    additions, candidate_checks = 0, 0
+    additions, candidate_checks, retriggers = 0, 0, 0
     for pitch,groups in by_pitch.items():
         for _,voters in groups:
-            if additions >= min(128,20000-len(notes)): break
+            if additions >= 128 or len(output) >= 20000: break
             if len(voters) < 2: continue
             candidate_checks += 1
             if candidate_checks > 512: continue
@@ -118,7 +133,12 @@ def refine_events(samples, notes, cross, original=None):
             if same: continue
             # Splitting a long event is a retrigger candidate, not safe to force.
             if any(n["midi"]==pitch and n["start"]<start<n["end"] for n in output):
-                suggestions.append(dict(kind="possible_retrigger",start=start,midi=pitch)); continue
+                split = split_retrigger(output,pitch,start,end,voters,peaks,envelope,original_envelope) if retriggers < 64 else None
+                if split:
+                    edits.append(split); retriggers += 1
+                else:
+                    suggestions.append(dict(kind="possible_retrigger",start=start,midi=pitch))
+                continue
             if not audible(pitch,start,end) or original is not None and not audible(pitch,start,end,original): continue
             centers = [start+min(.08,(end-start)*.3),start+min(.16,(end-start)*.7)]
             neighbors = [[n["midi"] for n in output if n["start"]<=c<n["end"]][:7] for c in centers]
@@ -127,9 +147,24 @@ def refine_events(samples, notes, cross, original=None):
             before = [fit(p,s,dictionary) if p else 1. for p,s in zip(neighbors,observed)]
             after = [fit([pitch,*p],s,dictionary) for p,s in zip(neighbors,observed)]
             if not all(a-b>max(.06,a*.15) for a,b in zip(before,after)): continue
+            # The stricter four-window gate lost true notes on regression data.
+            # Keep the validated selection policy and expose extra evidence as
+            # advisory uncertainty, not a silently worse default threshold.
+            strong = envelope.rises(pitch,start) and (original_envelope is None or original_envelope.rises(pitch,start))
+            for center in verification_centers(start,end):
+                pitches=[n['midi'] for n in output if n['start'] <= center < n['end']]
+                if len(pitches)>5 or pitch in pitches or harmonic_conflict(output,pitch,center):
+                    strong=False; break
+                spec=spectrum(samples,center)
+                old_fit=fit(pitches,spec,dictionary) if pitches else 1.
+                if not addition_gain(old_fit,fit([pitch,*pitches],spec,dictionary),len(pitches)):
+                    strong=False; break
+            if not strong:
+                suggestions.append(dict(kind="uncertain_addition",start=start,midi=pitch))
             note = dict(start=round(start,4),end=round(end,4),midi=pitch,
                 velocity=float(np.median([n.get("velocity",.5) for n in voters.values()])),
-                event_changed=True,event_added=True,fingering_uncertain=True)
+                event_changed=True,event_added=True,fingering_uncertain=True,
+                addition_uncertain=not strong,suspicious=not strong)
             output.append(note); additions+=1
             edits.append(dict(kind="add",start=start,midi=pitch,models=sorted(voters)))
     # Final simultaneous-note audit: revert additions whose evidence disappears.
@@ -147,12 +182,17 @@ def refine_events(samples, notes, cross, original=None):
             if not passed: continue
         retained.append(note)
     retained.sort(key=lambda n:(n["start"],n["midi"]))
+    offset_edits, offset_checks = refine_offsets(retained,cross,envelope,original_envelope)
+    edits.extend(offset_edits)
     added=sum(bool(n.get("event_added")) for n in retained)
-    summary=dict(version=1,added_notes=added,removed_notes=0,candidate_checks=min(candidate_checks,512),adjusted_onsets=sum(e["kind"]=="onset" for e in edits),
+    summary=dict(version=2,added_notes=added,removed_notes=0,candidate_checks=min(candidate_checks,512),adjusted_onsets=sum(e["kind"]=="onset" for e in edits),
+        adjusted_offsets=len(offset_edits),offset_checks=offset_checks,retrigger_splits=retriggers,
+        uncertain_additions=sum(bool(n.get('event_added') and n.get('addition_uncertain')) for n in retained),
         reverted_additions=additions-added,review_candidates=len(suggestions),suggestions=suggestions[:200],
         changes=[e for e in edits if e["kind"]!="add" or any(n.get("event_added") and n["midi"]==e["midi"] and abs(n["start"]-e["start"])<.001 for n in retained)][:200],
         original_mix_checked=original is not None,repeat_evidence=repeated_phrases(notes),
-        policy="two_independent_nominations_attack_fundamental_two_window_gain_final_recheck",
-        training_policy="none_no_predictions_as_reference",offset_policy="preserved",false_note_policy="review_only_no_automatic_deletion")
+        policy="two_window_selection_four_window_penalized_evidence_advisory_final_recheck",
+        addition_evidence_policy="stricter_gate_not_default_due_to_regression_recall_loss",
+        training_policy="none_no_predictions_as_reference",offset_policy="bounded_two_model_audio_drop",false_note_policy="review_only_no_automatic_deletion")
     validate(retained,duration)
     return retained,summary

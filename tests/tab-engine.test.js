@@ -179,6 +179,27 @@ Deno.test("overlapping consecutive pitches may reuse a string instead of disappe
   playable(result);
 });
 
+Deno.test("phrase allocation preserves an open sustain when another string is playable", () => {
+  const source = [note(64, 0, 1.5), note(65, .2, .18), note(67, .4, .4)];
+  const snapshot = JSON.stringify(source);
+  const result = assign(source);
+  assert(result.notes.length === 3, "All pitches retained");
+  assert(result.notes[0].fret === 0 && result.notes[0].end === 1.5, "Do not silence the open E unnecessarily");
+  assert(result.notes.slice(1).every(n => n.string !== result.notes[0].string), "Melody uses a different string");
+  assert(result.diagnostics.sustainConflicts === 0, "No unnecessary truncation");
+  assert(JSON.stringify(source) === snapshot, "Source timing remains untouched");
+  playable(result);
+});
+
+Deno.test("valid manual fingerings survive phrase optimization without imposing invalid tuning hints", () => {
+  const source = [{ ...note(64), edited: true, string: 3, fret: 9 }, note(65, .3, .2)];
+  const result = assign(source);
+  assert(result.notes[0].string === 3 && result.notes[0].fret === 9, "Preserve a valid user's choice");
+  const changed = assign(source, { capo: 2 });
+  assert(changed.notes.length === 2, "Invalid old tuning/capo hint must not hide a pitch");
+  playable(result); playable(changed);
+});
+
 Deno.test("invalid events and true duplicate onsets are removed without mutating input", () => {
   const input = [note(60), note(60, .002, .12), note(61, 1, .05, .05), {
     midi: 62,

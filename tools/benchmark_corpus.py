@@ -34,7 +34,7 @@ def weighted_chords(reference, predicted, duration):
     return dict(annotated_seconds=round(covered,3),exact_chord_duration_agreement=round(matched/max(covered,1e-12),4))
 
 
-def run(root, infer=False, limit=None):
+def run(root, infer=False, limit=None, reuse_raw_report=None):
     from dotenv import load_dotenv
     load_dotenv(ROOT/".env")
     from app import main
@@ -42,14 +42,27 @@ def run(root, infer=False, limit=None):
     manifest=json.loads((root/"manifest.json").read_text())
     if manifest.get("reference_policy")!="published_annotations_only_never_predictions":
         raise ValueError("Unreviewed corpus provenance")
+    reusable = {}
+    reuse_provenance = None
+    if reuse_raw_report:
+        previous=json.loads(reuse_raw_report.read_text())
+        if previous.get('manifest_sha256') != manifest_hash:
+            raise ValueError('Raw predictions belong to a different corpus manifest')
+        for row in previous['reports']:
+            if row['engine'] in {'basic_pitch','gaps','tabcnn','hybrid','chordino'}:
+                key=(row['id'],row['engine'])
+                if key in reusable: raise ValueError('Duplicate raw prediction provenance')
+                reusable[key]=row
+        reuse_provenance=dict(report_sha256=checksum(reuse_raw_report),pipeline_sha256=previous['pipeline_sha256'])
     if infer:
         with main.db() as connection:
             if connection.execute("SELECT 1 FROM guitar_tasks WHERE status IN ('queued','working')").fetchone() or connection.execute("SELECT 1 FROM jobs WHERE status IN ('queued','working')").fetchone():
                 raise RuntimeError("Live analyses active; rerun the resumable benchmark later")
     code_paths=["tools/basic_pitch_worker.py","tools/guitar_worker.py","tools/guitar_refinement.py",
         "tools/audio_verification.py","tools/audio_verification_worker.py","tools/cross_evidence.py",
-        "tools/event_verification.py","tools/chordino_worker.py","app/static/tab-engine.js"]
-    pipeline=hashlib.sha256(json.dumps({name:checksum(ROOT/name) for name in code_paths},sort_keys=True).encode()).hexdigest()
+        "tools/event_verification.py","tools/temporal_verification.py","tools/chordino_worker.py","app/static/tab-engine.js"]
+    code_hashes={name:checksum(ROOT/name) for name in code_paths}
+    pipeline=hashlib.sha256(json.dumps(code_hashes,sort_keys=True).encode()).hexdigest()
     evaluation_paths=["tools/benchmark_corpus.py","tools/benchmark_guitar.py",
         "tools/evaluate_fingering.js","tools/reference_corpus.py"]
     evaluation=hashlib.sha256(json.dumps({name:checksum(ROOT/name) for name in evaluation_paths},sort_keys=True).encode()).hexdigest()
@@ -69,6 +82,14 @@ def run(root, infer=False, limit=None):
             duration=recording.getnframes()/recording.getframerate()
         for engine in ("basic_pitch","gaps","tabcnn","hybrid","chordino","cross_verified","event_verified"):
             path=directory/(engine+".json")
+            if not path.exists() and (record['id'],engine) in reusable:
+                cached=reusable[(record['id'],engine)]
+                source=(root/cached['prediction']).resolve()
+                if not source.is_relative_to((root/'runs').resolve()) or source.parent.name != record['id'] or source.name != engine+'.json':
+                    raise ValueError('Raw prediction path outside pinned corpus run')
+                if cached['reference_sha256'] != record['reference_sha256'] or checksum(source) != cached['prediction_sha256'] or checksum(source.parent/'audio.wav') != record['audio_sha256']:
+                    raise ValueError('Raw prediction provenance/checksum mismatch')
+                shutil.copyfile(source,path)
             if infer and not path.exists():
                 output=directory/(engine+".tmp.json"); midi=directory/(engine+".mid")
                 if engine=="basic_pitch":
@@ -119,9 +140,11 @@ def run(root, infer=False, limit=None):
                     precision=round(precision,4),recall=round(recall,4),f1=round(2*precision*recall/max(1e-12,precision+recall),4)))
         if checksum(root/"manifest.json")!=manifest_hash:
             raise ValueError("Corpus manifest changed during evaluation")
+        if any(checksum(ROOT/name)!=digest for name,digest in code_hashes.items()):
+            raise ValueError('Inference code changed during evaluation; rerun under its new fingerprint')
         result=dict(schema=1,source=manifest["source"],model_training_overlap=manifest["model_training_overlap"],
-            pipeline_sha256=pipeline,evaluation_sha256=evaluation,manifest_sha256=manifest_hash,
-            policy="references_not_passed_to_inference_no_automatic_training",reports=reports,aggregate=aggregate)
+            pipeline_sha256=pipeline,inference_code_hashes=code_hashes,evaluation_sha256=evaluation,manifest_sha256=manifest_hash,
+            policy="references_not_passed_to_inference_no_automatic_training",reused_raw_predictions=reuse_provenance,reports=reports,aggregate=aggregate)
         (root/"report.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
         (root/("report-"+pipeline[:12]+"-"+evaluation[:12]+".json")).write_text(json.dumps(result,ensure_ascii=False,indent=2))
     return reports
@@ -132,7 +155,8 @@ def main():
     parser.add_argument("root",type=Path)
     parser.add_argument("--infer",action="store_true")
     parser.add_argument("--limit",type=int)
+    parser.add_argument("--reuse-raw-report",type=Path,help="Explicit checksum-verified fixed raw predictions; cross/event stages rerun")
     args=parser.parse_args()
-    run(args.root,args.infer,args.limit)
+    run(args.root,args.infer,args.limit,args.reuse_raw_report)
 
 if __name__=="__main__": main()

@@ -51,7 +51,7 @@ def main():
     if args.event_review:
         original,_ = librosa.load(args.original_audio,sr=16000,mono=True) if args.original_audio else (None,None)
         notes,event_summary = refine_events(samples,notes,cross,original)
-        summary.update(timing_policy="bounded_onset_repairs",note_count_policy="bounded_independent_additions",
+        summary.update(timing_policy="bounded_onset_offset_retrigger_repairs",note_count_policy="bounded_independent_additions_and_retriggers",
             limitations=["spectral_gain_is_not_accuracy","no_string_identification","no_automatic_training","event_edits_experimental"])
     payload = dict(engine="event_verified" if args.event_review else "cross_verified" if cross else "verified", profile="guitar_event_verified_v1" if args.event_review else "guitar_cross_verified_v1" if cross else "guitar_verified_v1", duration=round(len(samples)/16000,4),
         notes=notes, note_count=len(notes), refinement=summary, experimental=True,

@@ -1020,7 +1020,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=8");
+    const worker = new Worker("/static/tab-worker.js?v=9");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
