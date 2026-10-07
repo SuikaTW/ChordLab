@@ -1,0 +1,163 @@
+/* Quiet Studio. Optional visual layer; the original stylesheet stays intact. */
+html[data-theme="studio"]{--ink:#202b40;--paper:#f5f7fb;--panel:#fff;--line:#e2e7f0;--muted:#68758c;--acid:#dfe5ff;--coral:#5365dd;--blue:#c8d6ff;--soft:#eef1f7;--shadow:0 12px 32px #2634540b;scroll-behavior:auto}
+html[data-theme="studio"] body{background:var(--paper);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;line-height:1.5;letter-spacing:0}
+html[data-theme="studio"] button{transition:background .15s,border-color .15s,color .15s}
+html[data-theme="studio"] button:focus-visible,html[data-theme="studio"] a:focus-visible,html[data-theme="studio"] input:focus-visible,html[data-theme="studio"] select:focus-visible,html[data-theme="studio"] summary:focus-visible{outline:3px solid #5365dd55;outline-offset:3px}
+html[data-theme="studio"] .topbar{height:68px;background:#fff;border-color:var(--line);backdrop-filter:none;padding:0 28px}
+html[data-theme="studio"] .brand{gap:10px;color:var(--ink)}
+html[data-theme="studio"] .brand-mark{width:34px;height:34px;border-radius:10px;transform:none;background:var(--ink);color:#fff;font-size:11px;letter-spacing:.5px}
+html[data-theme="studio"] .brand b{font-size:17px;letter-spacing:-.5px}
+html[data-theme="studio"] .top-nav{border:0;background:var(--soft);border-radius:9px;box-shadow:none;padding:3px}
+html[data-theme="studio"] .top-nav button,html[data-theme="studio"] .top-nav a{border-radius:6px;min-height:36px;font-size:12px;color:var(--muted)}
+html[data-theme="studio"] .top-nav button.active{background:#fff;color:var(--coral);box-shadow:0 1px 4px #2034540d}
+html[data-theme="studio"] .topbar .icon-button{border:0;background:var(--soft);border-radius:9px;color:var(--muted)}
+html[data-theme="studio"] .theme-control select{background:#fff;border-radius:8px}
+html[data-theme="studio"] .status-pill{border:0;background:var(--soft);font-size:10px}
+html[data-theme="studio"] .shell{grid-template-columns:288px minmax(0,1fr);min-height:calc(100vh - 68px)}
+html[data-theme="studio"] .left-rail{background:#fff;border-right:1px solid var(--line)}
+html[data-theme="studio"] .import-panel,html[data-theme="studio"] .jobs-panel{padding:26px 20px}
+html[data-theme="studio"] .section-heading h1{font-size:20px;letter-spacing:-.5px}
+html[data-theme="studio"] .source-tabs{border-radius:8px;margin:18px 0;background:var(--soft);padding:3px}
+html[data-theme="studio"] .source-tabs .tab{font-size:12px;border-radius:6px;padding:8px}
+html[data-theme="studio"] .source-tabs .tab.active{color:var(--ink);box-shadow:0 1px 4px #2034540a}
+html[data-theme="studio"] .field>span{font-size:11px;color:var(--muted);font-weight:600}
+html[data-theme="studio"] .field input,html[data-theme="studio"] .segment-editor input,html[data-theme="studio"] .analysis-preset select{background:#fff;border-color:var(--line);border-radius:8px;min-height:44px;font-size:13px}
+html[data-theme="studio"] .analysis-preset{margin:18px 0}
+html[data-theme="studio"] .drop-zone{background:var(--paper);border-color:#bcc6d9;border-radius:9px;min-height:126px}
+html[data-theme="studio"] .drop-zone:hover{background:#eef1ff;border-color:var(--coral)}
+html[data-theme="studio"] .analysis-options{background:#fff;border-color:var(--line);border-radius:8px}
+html[data-theme="studio"] .analysis-options>summary{padding:12px;font-size:11px}
+html[data-theme="studio"] .analysis-options-body{background:var(--paper);padding:12px}
+html[data-theme="studio"] .stem-option,html[data-theme="studio"] .public-toggle{background:#fff;border-radius:8px}
+html[data-theme="studio"] .separation-options{background:var(--soft)}
+html[data-theme="studio"] .primary{border-radius:8px;background:var(--coral);color:white;box-shadow:none;min-height:44px;font-size:13px}
+html[data-theme="studio"] .primary:hover{background:#4354c9}
+html[data-theme="studio"] .secondary{background:#fff;border-color:var(--line);border-radius:8px;min-height:40px;font-size:12px}
+html[data-theme="studio"] .secondary:hover{background:var(--paper);border-color:#c4cddd}
+html[data-theme="studio"] .fine-print{font-size:10px;line-height:1.6;color:var(--muted)}
+html[data-theme="studio"] .jobs-panel h2{font-size:13px;font-weight:600}
+html[data-theme="studio"] .jobs-list{gap:8px}
+html[data-theme="studio"] .job-item{background:#fff;border-color:transparent;border-radius:8px;padding:12px 10px}
+html[data-theme="studio"] .job-item:hover{background:var(--paper);border-color:transparent}
+html[data-theme="studio"] .job-item.active{background:#eef1ff;border-color:#dee4ff}
+html[data-theme="studio"] .job-item.active:before{display:none}
+html[data-theme="studio"] .job-title{font-size:12px;font-weight:600}
+html[data-theme="studio"] .job-meta{font-size:10px;color:var(--muted)}
+html[data-theme="studio"] .job-state{font-size:9px;background:var(--soft);padding:3px 6px}
+html[data-theme="studio"] .job-state.done{background:#e9f4ef;color:#37705a}
+html[data-theme="studio"] .job-state.failed{background:#fff0ed;color:#a34a3a}
+html[data-theme="studio"] .jobs-more{border-color:var(--line);border-radius:8px}
+html[data-theme="studio"] .workspace{padding:36px clamp(24px,3.5vw,52px) 48px}
+html[data-theme="studio"] .active-workspace{max-width:1080px;animation:none}
+html[data-theme="studio"] .workspace-head{align-items:center;padding-bottom:22px;margin-bottom:22px;border-color:var(--line);gap:22px}
+html[data-theme="studio"] .workspace-head h2{font-size:clamp(23px,2.5vw,30px);letter-spacing:-.7px;line-height:1.4;font-weight:650;overflow-wrap:anywhere}
+html[data-theme="studio"] .workspace-actions{flex-shrink:0;gap:8px}
+html[data-theme="studio"] .workspace-actions .secondary{background:#fff}
+html[data-theme="studio"] .empty-workspace h2{font-size:34px;letter-spacing:-1px;line-height:1.3}
+html[data-theme="studio"] .empty-graphic span{box-shadow:none;border-color:var(--line);border-radius:12px;color:var(--coral);background:#eef1ff;transform:none}
+html[data-theme="studio"] .empty-graphic span:nth-child(2){background:#fff}
+html[data-theme="studio"] .empty-graphic span:nth-child(3){background:#e8edf7}
+html[data-theme="studio"] .progress-panel{border-radius:12px;background:#fff;border-color:var(--line)}
+html[data-theme="studio"] .progress-track{background:var(--soft);height:6px}
+html[data-theme="studio"] .progress-track i{background:var(--coral)}
+html[data-theme="studio"] .track-row{background:#fff;border-radius:10px;padding:12px 14px;border-color:var(--line)}
+html[data-theme="studio"] .track-switch{background:var(--soft);border-radius:7px}
+html[data-theme="studio"] .track-switch button{border-radius:5px;font-size:11px}
+html[data-theme="studio"] .track-switch button.active{background:var(--coral);color:#fff}
+html[data-theme="studio"] .method-row{gap:12px;border-color:var(--line);padding:6px 0 14px;margin-bottom:12px}
+html[data-theme="studio"] .method-switch{background:var(--soft);border-radius:7px;padding:3px}
+html[data-theme="studio"] .method-switch button{font-family:inherit;font-size:11px;border-radius:5px}
+html[data-theme="studio"] .method-switch button.active{background:#fff;color:var(--coral);box-shadow:none}
+html[data-theme="studio"] .music-settings>span,html[data-theme="studio"] .music-settings label{background:#fff;border-color:var(--line);border-radius:7px;font-size:11px}
+html[data-theme="studio"] .downloads-panel{border-radius:9px;border-color:var(--line)}
+html[data-theme="studio"] .stem-downloads a{background:var(--paper);border-color:var(--line)}
+html[data-theme="studio"] .result-tabs{width:100%;margin:18px 0 24px;border-bottom:1px solid var(--line);padding:0;background:transparent;border-radius:0;gap:24px;overflow:visible}
+html[data-theme="studio"] .result-tabs button{min-height:44px;padding:8px 2px;border-radius:0;border-bottom:2px solid transparent;transform:translateY(1px);font-size:13px;font-weight:600;box-shadow:none;background:transparent}
+html[data-theme="studio"] .result-tabs button.active{border-bottom-color:var(--coral);background:transparent;color:var(--coral);box-shadow:none}
+html[data-theme="studio"] [data-result-panel]:not(.result-hidden){animation:studio-fade .16s ease-out}
+html[data-theme="studio"] .content-heading h3{font-size:16px;letter-spacing:-.2px}
+html[data-theme="studio"] .content-heading>span{font-size:11px}
+html[data-theme="studio"] .timeline-wrap{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
+html[data-theme="studio"] .chord-follow-toolbar{color:var(--muted);font-size:11px;margin-bottom:6px}
+html[data-theme="studio"] .timeline-ruler{color:#7f8ba0;border-color:var(--line)}
+html[data-theme="studio"] .timeline{scrollbar-color:#c6cfdf transparent}
+html[data-theme="studio"] .chord-block{background:var(--paper);border-color:var(--line);color:var(--ink);border-radius:7px;height:76px;transform:none}
+html[data-theme="studio"] .chord-block b{font-size:16px;font-weight:600}
+html[data-theme="studio"] .chord-block small{color:var(--muted)}
+html[data-theme="studio"] .chord-block:hover,html[data-theme="studio"] .chord-block.selected{background:#eef1ff;border-color:#a7b3ed}
+html[data-theme="studio"] .chord-block.playing{background:#eef1ff;border-color:var(--coral);box-shadow:inset 0 -3px var(--coral);transform:none}
+html[data-theme="studio"] .chord-playhead{background:var(--coral);box-shadow:0 0 0 2px #5365dd14}
+html[data-theme="studio"] .comparison-summary,html[data-theme="studio"] .chord-candidates p{color:var(--muted);font-size:12px;line-height:1.7}
+html[data-theme="studio"] .chord-detail,html[data-theme="studio"] .segment-editor,html[data-theme="studio"] .full-tab-panel,html[data-theme="studio"] .lyrics-panel{background:#fff;border-color:var(--line);border-radius:12px;padding:22px}
+html[data-theme="studio"] .panel-title h3{font-size:18px;letter-spacing:-.3px}
+html[data-theme="studio"] .chord-diagram.empty{min-height:144px;height:144px;margin:16px 0 0;color:var(--muted);font-size:12px}
+html[data-theme="studio"] .voicing-positions button{background:var(--paper);border-color:var(--line);border-radius:7px}
+html[data-theme="studio"] .voicing-positions button[aria-pressed="true"]{background:#eef1ff;color:var(--coral);border-color:#a7b3ed}
+html[data-theme="studio"] .practice-tools,html[data-theme="studio"] .tab-options{border-color:var(--line);background:transparent}
+html[data-theme="studio"] .practice-controls button,html[data-theme="studio"] .practice-controls select,html[data-theme="studio"] .tab-settings select,html[data-theme="studio"] .tab-settings input{border-color:var(--line);border-radius:7px;background:#fff}
+html[data-theme="studio"] .tab-toolbar button{background:var(--paper);border-color:var(--line);border-radius:7px}
+html[data-theme="studio"] .tab-density{background:var(--soft)}
+html[data-theme="studio"] .tab-flow-viewport{padding:14px;background:var(--paper);border-color:var(--line);border-radius:9px;scrollbar-color:#c6cfdf transparent}
+html[data-theme="studio"] .tab-system{border-color:var(--line);background:#fff;border-radius:8px;box-shadow:none;transform:none}
+html[data-theme="studio"] .tab-system.playing{border-color:#a7b3ed;box-shadow:none}
+html[data-theme="studio"] .tab-system-string button{border-color:#fff;background:var(--ink);border-radius:4px}
+html[data-theme="studio"] .tab-system-string button:hover{background:var(--coral);color:#fff}
+html[data-theme="studio"] .tab-rest{background:#fff}
+html[data-theme="studio"] .tab-system-string button.suspect{background:#986522}
+html[data-theme="studio"] .tab-system-string button.edited{background:#346f63}
+html[data-theme="studio"] .lyrics-list button{border-radius:7px;transform:none}
+html[data-theme="studio"] .lyrics-list button.active{border-color:#ccd4fc;background:#eef1ff;transform:none}
+html[data-theme="studio"] .library-page{max-width:1200px;padding:40px 28px}
+html[data-theme="studio"] .library-hero h1{font-size:38px;letter-spacing:-1px;line-height:1.3}
+html[data-theme="studio"] .library-hero p{font-size:13px;color:var(--muted)}
+html[data-theme="studio"] .library-search{background:#fff;border-radius:9px;border-color:var(--line)}
+html[data-theme="studio"] .library-sort{border-radius:8px;background:var(--soft)}
+html[data-theme="studio"] .library-sort button{border-radius:6px}
+html[data-theme="studio"] .library-card{border-radius:12px;background:#fff;border-color:var(--line);box-shadow:none}
+html[data-theme="studio"] .library-card:hover{border-color:#a7b3ed;box-shadow:var(--shadow);transform:none}
+html[data-theme="studio"] .library-open h2{font-size:16px;font-weight:600;line-height:1.5}
+html[data-theme="studio"] .library-card-meta span{border-radius:6px;background:var(--paper);border-color:transparent;font-size:11px}
+html[data-theme="studio"] .library-favorite{background:var(--soft);border-radius:7px}
+html[data-theme="studio"] .library-favorite.active{background:#eef1ff;color:var(--coral)}
+html[data-theme="studio"] .player-panel.player-dock{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 36px #2537581a;width:min(1120px,calc(100% - 48px))}
+html[data-theme="studio"] .player-dock .player-toggle,html[data-theme="studio"] .player-dock .player-toggle.playing{background:var(--coral);color:#fff;border-radius:50%}
+html[data-theme="studio"] .player-song>span,html[data-theme="studio"] .player-time,html[data-theme="studio"] .volume-control{color:var(--muted)}
+html[data-theme="studio"] .seek-slider,html[data-theme="studio"] .volume-control input{accent-color:var(--coral)}
+html[data-theme="studio"] .toast{background:var(--ink);box-shadow:var(--shadow)}
+html[data-theme="studio"] .toast.error{background:#a63422}
+@keyframes studio-fade{from{opacity:.7}to{opacity:1}}
+@media(max-width:1100px){html[data-theme="studio"] .shell{grid-template-columns:260px minmax(0,1fr)}html[data-theme="studio"] .workspace{padding:28px 24px 40px}html[data-theme="studio"] .workspace-head{flex-wrap:wrap}html[data-theme="studio"] .workspace-head h2{font-size:24px}}
+@media(max-width:720px){
+  html[data-theme="studio"] .topbar{height:106px;align-items:flex-start;padding:12px 14px;gap:8px}
+  html[data-theme="studio"] .brand{height:36px}
+  html[data-theme="studio"] .brand>span:last-child{display:grid}
+  html[data-theme="studio"] .top-actions{height:36px;gap:7px}
+  html[data-theme="studio"] .top-nav{position:absolute;top:auto;bottom:8px;left:14px;right:14px;height:40px;transform:none;padding:3px;border:0;border-radius:8px;background:var(--soft);box-shadow:none;backdrop-filter:none;gap:4px}
+  html[data-theme="studio"] .top-nav button,html[data-theme="studio"] .top-nav a{min-height:34px;flex-direction:row;gap:6px;padding:4px 8px;font-size:11px;border-radius:6px}
+  html[data-theme="studio"] .top-nav svg{width:16px;height:16px}
+  html[data-theme="studio"] .top-nav button.active{background:#fff;color:var(--coral)}
+  html[data-theme="studio"] .shell{display:block}
+  html[data-theme="studio"] .left-rail{border:0;background:var(--paper)}
+  html[data-theme="studio"] .import-panel{padding:22px 16px;background:#fff}
+  html[data-theme="studio"] .section-heading h1{font-size:21px}
+  html[data-theme="studio"] .field input,html[data-theme="studio"] .analysis-preset select,html[data-theme="studio"] .segment-editor input,html[data-theme="studio"] .practice-controls input{font-size:16px}
+  html[data-theme="studio"] .jobs-panel{padding:18px 16px;background:var(--paper);border-color:var(--line)}
+  html[data-theme="studio"] .job-item{background:#fff;border-color:var(--line)}
+  html[data-theme="studio"] .workspace{padding:24px 14px 32px}
+  html[data-theme="studio"] .workspace-head{align-items:flex-start;gap:12px;margin-bottom:18px;padding-bottom:18px}
+  html[data-theme="studio"] .workspace-head h2{font-size:23px;line-height:1.45}
+  html[data-theme="studio"] .workspace-actions{width:100%}
+  html[data-theme="studio"] .result-tabs{gap:0;justify-content:space-between;margin:16px 0 20px}
+  html[data-theme="studio"] .result-tabs button{flex:1;min-height:46px;font-size:12px;padding:8px 3px}
+  html[data-theme="studio"] .timeline-wrap{padding:14px 10px;border-radius:10px}
+  html[data-theme="studio"] .chord-detail,html[data-theme="studio"] .segment-editor,html[data-theme="studio"] .full-tab-panel,html[data-theme="studio"] .lyrics-panel{padding:16px;border-radius:10px}
+  html[data-theme="studio"] .tab-flow-viewport{padding:8px}
+  html[data-theme="studio"] .library-page{padding:24px 16px}
+  html[data-theme="studio"] .library-hero h1{font-size:30px}
+  html[data-theme="studio"] .player-panel.player-dock{bottom:calc(10px + env(safe-area-inset-bottom,0px));width:calc(100% - 20px);border-radius:12px}
+  html[data-theme="studio"] body{padding-bottom:24px}
+  html[data-theme="studio"] body.has-player-dock{padding-bottom:144px}
+  html[data-theme="studio"] body.has-player-dock .toast{bottom:calc(126px + env(safe-area-inset-bottom,0px))}
+  html[data-theme="studio"] .empty-workspace h2{font-size:27px}
+}
+@media(prefers-reduced-motion:reduce){html[data-theme="studio"] button,html[data-theme="studio"] [data-result-panel]:not(.result-hidden){animation:none!important;transition:none}}

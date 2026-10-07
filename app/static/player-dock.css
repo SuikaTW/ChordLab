@@ -1,0 +1,32 @@
+/* Shared functionality in both styles. One persistent player, no cloned audio. */
+.theme-control{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+.theme-control select{min-height:36px;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:4px 8px;color:var(--ink);font:inherit}
+.player-panel.player-dock{position:fixed;z-index:46;left:50%;bottom:16px;transform:translateX(-50%);width:min(1120px,calc(100% - 48px));margin:0;display:grid;grid-template-columns:48px minmax(100px,190px) minmax(80px,1fr) 96px 170px;grid-template-rows:auto;align-items:center;gap:16px;padding:14px 18px;box-shadow:0 10px 36px #18202526}
+.player-dock .player-toggle{grid-row:auto;width:46px;height:46px;min-height:44px}
+.player-song{display:grid;gap:4px;min-width:0}
+.player-song>span{font-size:10px;color:#c9ccc5}
+.player-song>b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600}
+.player-dock .player-progress{grid-column:auto}
+.player-dock .player-progress>span{display:none}
+.player-dock .player-time{grid-column:auto;text-align:right}
+.player-dock .volume-control{grid-column:auto;grid-template-columns:18px minmax(0,1fr) 36px;margin:0;gap:6px}
+.player-dock .volume-control svg{width:17px;height:17px}
+.player-dock input[type=range]{min-height:32px}
+body.has-player-dock{padding-bottom:116px}
+body.has-player-dock .toast{bottom:110px}
+@media(max-width:1100px){.top-actions .queue-pill{display:none!important}.theme-control>span{display:none}}
+@media(max-width:720px){
+  .player-panel.player-dock{bottom:calc(82px + env(safe-area-inset-bottom,0px));width:calc(100% - 24px);padding:10px 12px;gap:4px 10px;grid-template-columns:44px minmax(0,1fr) 98px;grid-template-rows:auto auto auto;border-radius:14px}
+  .player-dock .player-toggle{grid-column:1;grid-row:1/4;width:44px;height:44px}
+  .player-song{grid-column:2/4;grid-row:1}
+  .player-song>span{display:none}
+  .player-song>b{font-size:11px}
+  .player-dock .player-progress{grid-column:2/4;grid-row:2}
+  .player-dock .player-time{grid-column:2;grid-row:3;text-align:left;font-size:9px}
+  .player-dock .volume-control{grid-column:3;grid-row:3;grid-template-columns:15px minmax(0,1fr)}
+  .player-dock .volume-control output{display:none}
+  .player-dock input[type=range]{min-height:26px}
+  body.has-player-dock{padding-bottom:216px}
+  body.has-player-dock .toast{bottom:calc(196px + env(safe-area-inset-bottom,0px))}
+  .theme-control select{min-height:36px;max-width:68px;padding:4px 5px}
+}

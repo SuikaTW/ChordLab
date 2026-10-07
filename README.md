@@ -1,5 +1,7 @@
 # ChordLab
 
+The default Quiet Studio interface offers a persistent bottom player while reading TAB. The header style selector switches back to the original look without interrupting playback; it remembers the browser preference. The original source archive, Git tag and restore details are documented in [UI backup notes](docs/ui-redesign-20261008.md).
+
 The practice workspace includes private, account-scoped TAB editing, guitar-stem
 preview before optional transcription, estimated beat/bar layout with manual
 correction, windowed TAB rendering, and separate bounded download/media pools.

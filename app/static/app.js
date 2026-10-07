@@ -278,6 +278,7 @@ function setPage(page) {
   state.page = page === "library" ? "library" : "workspace";
   $("#workspacePage").classList.toggle("hidden", state.page !== "workspace");
   $("#libraryPage").classList.toggle("hidden", state.page !== "library");
+  syncPlayerDock();
   $$(".top-nav [data-page]").forEach((button) =>
     button.classList.toggle("active", button.dataset.page === state.page)
   );
@@ -560,7 +561,15 @@ function syncCurrentJob() {
   renderJobs();
 }
 
+function syncPlayerDock() {
+  const visible = state.page === "workspace" && state.current?.status === "done";
+  $("#playerDock").classList.toggle("hidden", !visible);
+  document.body.classList.toggle("has-player-dock", visible);
+  $("#playerSongTitle").textContent = state.current?.title || "—";
+}
+
 function renderWorkspace() {
+  syncPlayerDock();
   $("#emptyWorkspace").classList.add("hidden");
   $("#activeWorkspace").classList.remove("hidden");
   $("#workTitle").textContent = state.current.title;
