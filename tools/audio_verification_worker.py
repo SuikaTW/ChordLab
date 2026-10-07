@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.audio_verification import verify, harmonic_profile, combine_profiles, synthesize
 from tools.guitar_worker import write_midi
 from tools.cross_evidence import CrossEvidence, review_chords
+from tools.event_verification import refine_events
 
 
 def main():
@@ -25,6 +26,8 @@ def main():
     parser.add_argument("--preview", type=Path)
     parser.add_argument("--cross-evidence", type=Path)
     parser.add_argument("--harmony-audio",type=Path)
+    parser.add_argument("--event-review",action="store_true")
+    parser.add_argument("--original-audio",type=Path)
     args = parser.parse_args()
     started = time.monotonic()
     samples, _ = librosa.load(args.audio, sr=16000, mono=True)
@@ -42,10 +45,20 @@ def main():
             profiles.append(harmonic_profile(audio, reference["notes"]))
     cross = CrossEvidence(json.loads(args.cross_evidence.read_text()),len(samples)/16000,source.get("engine","basic_pitch")) if args.cross_evidence else None
     notes, summary = verify(samples, source["notes"], combine_profiles(profiles), cross=cross)
-    payload = dict(engine="cross_verified" if cross else "verified", profile="guitar_cross_verified_v1" if cross else "guitar_verified_v1", duration=round(len(samples)/16000,4),
+    if args.event_review and cross is None:
+        raise ValueError("Event review requires independent evidence")
+    event_summary = None
+    if args.event_review:
+        original,_ = librosa.load(args.original_audio,sr=16000,mono=True) if args.original_audio else (None,None)
+        notes,event_summary = refine_events(samples,notes,cross,original)
+        summary.update(timing_policy="bounded_onset_repairs",note_count_policy="bounded_independent_additions",
+            limitations=["spectral_gain_is_not_accuracy","no_string_identification","no_automatic_training","event_edits_experimental"])
+    payload = dict(engine="event_verified" if args.event_review else "cross_verified" if cross else "verified", profile="guitar_event_verified_v1" if args.event_review else "guitar_cross_verified_v1" if cross else "guitar_verified_v1", duration=round(len(samples)/16000,4),
         notes=notes, note_count=len(notes), refinement=summary, experimental=True,
         source_engine=source.get("engine", "basic_pitch"),
         elapsed_seconds=round(time.monotonic()-started,3), confidence_kind="uncalibrated_spectral_fit")
+    if event_summary:
+        payload["event_review"] = event_summary
     if cross:
         payload.update(fingering_tuning="standard",fingering_capo=0)
         harmony,_ = librosa.load(args.harmony_audio,sr=16000,mono=True) if args.harmony_audio else (samples,16000)

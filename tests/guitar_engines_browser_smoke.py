@@ -68,6 +68,7 @@ def run():
             page.goto(base)
             page.locator(f'[data-job="{args.job}"]').click()
             page.locator('[data-result-view="tab"]').click()
+            page.locator("#tabEngineOption summary").click()
             page.locator("#continuousTab .tab-system").first.wait_for(state="visible")
             for engine in ("gaps", "tabcnn", "hybrid", "basic_pitch", "gaps"):
                 page.locator("#tabEngine").select_option(engine)

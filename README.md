@@ -39,6 +39,39 @@ Users may explicitly publish a completed analysis to the shared library. Public 
 
 Optional timed-lyrics transcription uses a separate CPU-only faster-whisper runtime. When stems are enabled it transcribes the isolated vocal track; otherwise it uses the normalized full mix. Timed lyrics are shown in the player and merged with overlapping play chords in the PDF export. Short opening songwriter/composer captions hallucinated as lyrics are filtered; singing transcription remains approximate and may need manual correction.
 
+## Reproducible reference corpus and event review
+
+The primary **Recommended TAB** button (`event_verified`) prepares missing
+installed Basic Pitch, GAPS, TabCNN and hybrid outputs in one queued task, then
+consolidates independent evidence. Viewing an existing recommendation does not
+start another analysis. Raw variants remain in a closed advanced comparison;
+saved personal scores take priority. Input fingerprints flag stale recommendations
+for explicit refresh. Every original analysis and personal edit is preserved.
+It combines cross-model pitch verification with
+bounded onset repairs and missing-note additions. Additions need two independent
+model families, an audio transient, fundamentals in two windows and a spectral
+fit gain, followed by a final recheck. A full mix is confirmation/veto, not another
+guitar-model vote. Suspected false notes, retriggers and repeated phrases remain
+clickable review hints: no automatic deletion, sustain splitting, copying or training.
+
+`tools/reference_corpus.py` explicitly downloads the checksum-pinned **GuitarSet
+v1.1.0** microphone audio and JAMS archives, selects six clips by performer/style,
+excludes three upstream known annotation-error files, and preserves source,
+license, attribution and immutable audio/reference hashes. GuitarSet is by
+Qingyang Xi, Rachel M. Bittner, Johan Pauwels, Xuzhou Ye and Juan P. Bello (ISMIR
+2018), licensed CC BY 4.0; source: https://zenodo.org/records/3371780.
+
+`tools/benchmark_corpus.py` runs the application's pinned workers in its existing
+network-isolated sandbox, without passing references into inference or changing
+production jobs, weights or answers. It measures pitch/onset, offsets, actual
+client TAB allocation and separately sourced chord annotations. Performer-grouped
+development/regression splits and pipeline-hashed reports support reproducible
+comparisons. **Existing models may have trained on GuitarSet: this is regression
+coverage, not an independent blind test.** The initial six-clip pilot covers one
+Bossa Nova piece, not broad genre accuracy. Internet scores need recording/version,
+tuning/capo, licensing and alignment review before becoming trusted references.
+Predictions never become reference labels. See the Chinese README for commands.
+
 ## Bass TAB
 
 Select **Bass** in the instrument TAB panel for a continuous four-string score,

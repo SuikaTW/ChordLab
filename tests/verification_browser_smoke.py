@@ -27,6 +27,7 @@ def run():
             page.goto(BASE)
             page.locator(f'[data-job="{JOB}"]').click()
             page.locator('[data-result-view="tab"]').click()
+            page.locator("#tabEngineOption summary").click()
             page.locator("#tabEngine").select_option("verified")
             page.locator("#verificationSummary").wait_for()
             page.locator("#continuousTab .tab-system").first.wait_for()

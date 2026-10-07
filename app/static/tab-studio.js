@@ -50,7 +50,7 @@ const TabStudio = (() => {
       }
     });
     $("#playVerification").addEventListener("click", async () => {
-      if (!jobId || isBass() || !["verified", "cross_verified"].includes(state.tabEngine)) return;
+      if (!jobId || isBass() || !["verified", "cross_verified", "event_verified"].includes(state.tabEngine)) return;
       const id = jobId, player = $("#verificationPlayer"), main = $("#audioPlayer");
       const engine = state.tabEngine;
       const request = ++verificationSerial;
@@ -98,13 +98,14 @@ const TabStudio = (() => {
       state.tabNotes = [];
       await loadContinuousTab();
     });
-    $("#tabEngine").addEventListener("change", async () => {
+    async function chooseEngine(engine) {
       const previous = state.tabEngine || "basic_pitch";
       if (!canLeave()) {
         $("#tabEngine").value = previous;
-        return;
+        return false;
       }
-      state.tabEngine = $("#tabEngine").value;
+      state.tabEngine = engine;
+      $("#tabEngine").value = engine;
       state.tabCancel?.();
       state.tabRender = (state.tabRender || 0) + 1;
       reset(jobId);
@@ -112,6 +113,20 @@ const TabStudio = (() => {
       state.tabSource = "unavailable";
       state.tabNotes = [];
       await loadContinuousTab();
+      return true;
+    }
+    $("#tabEngine").addEventListener("change", () => chooseEngine($("#tabEngine").value));
+    $("#recommendedTab").addEventListener("click", async () => {
+      const id=jobId;
+      try {
+        if (state.tabEngine !== "event_verified" && !await chooseEngine("event_verified")) return;
+        if (jobId !== id || isBass()) return;
+        const task=await api(taskPath(id,"event_verified"));
+        if (jobId !== id || state.tabEngine !== "event_verified") return;
+        if (task.status !== "done") await generate();
+      } catch (error) {
+        if (jobId === id) toast(error.message,true);
+      }
     });
     $("#tabFingering").addEventListener("change", () => {
       if (!reconfigure()) return;
@@ -229,6 +244,7 @@ const TabStudio = (() => {
     $("#revokeReference").classList.add("hidden");
     $("#tabInstrument").value = instrument();
     $("#tabEngineOption").classList.toggle("hidden", isBass());
+    $("#recommendedTab").classList.toggle("hidden", isBass());
     const select = $("#tabTuning");
     select.replaceChildren();
     for (const [name, definition] of Object.entries(ChordLabTab.TUNINGS)) {
@@ -248,7 +264,7 @@ const TabStudio = (() => {
     state.tabDensity = localStorage.getItem(tabStorageKey("density", id)) === "full" ? "full" : "clean";
     $$("[data-tab-density]").forEach((button) => button.classList.toggle("active", button.dataset.tabDensity === state.tabDensity));
     $("#guitarPreview").textContent = isBass() ? "試聽 Bass" : "試聽吉他";
-    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified"].includes(state.tabEngine));
+    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine));
     updateInstrumentControls();
   }
   function updateInstrumentControls() {
@@ -312,18 +328,21 @@ const TabStudio = (() => {
     $("#tabWarnings").classList.add("hidden");
     $("#verificationSummary").classList.add("hidden");
     $("#verificationPreviewPanel").classList.add("hidden");
+    $("#eventReviewPanel").classList.add("hidden");
     verificationSerial++;
     $("#verificationPlayer").pause();
     $("#verificationPlayer").removeAttribute("src");
     $("#verificationPlayer").load();
     state.tabVerification = null;
+    state.tabEventReview = null;
     $("#tabNoteSummary").textContent = "";
     $("#tabSource").textContent = "";
     $("#tabEngineMidi").classList.add("hidden");
     $("#tabEngineMidi").removeAttribute("href");
-    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified"].includes(state.tabEngine));
+    $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine));
     controls();
     $("#generateGuitarTab").classList.add("hidden");
+    $("#recommendedTab").disabled = false;
     $("#guitarPreview").classList.add("hidden");
   }
   function setRhythm(saved) {
@@ -380,7 +399,7 @@ const TabStudio = (() => {
     $("#guitarPreview").classList.toggle("hidden", !has);
     const button = $("#generateGuitarTab"),
       pending = has && (["pending", "queued", "working", "failed", "unavailable"].includes(status));
-    button.classList.toggle("hidden", !pending || !state.current?.mine && !state.viewer?.admin);
+    button.classList.toggle("hidden", !pending || !state.current?.mine && !state.viewer?.admin || state.tabEngine === "event_verified" && !isBass());
     const engine = state.tabEngine || "basic_pitch";
     const unavailable = isBass() ? task.available === false : task.variants?.find((variant) => variant.engine === engine)?.available === false;
     button.disabled = ["queued", "working"].includes(status) || !!task.busy_engine || unavailable;
@@ -393,6 +412,13 @@ const TabStudio = (() => {
       const option = [...$("#tabEngine").options].find((option) => option.value === variant.engine);
       if (option) option.disabled = !variant.available && !variant.ready;
     }
+    const recommended=task.variants?.find((variant) => variant.engine === "event_verified");
+    const primary=$("#recommendedTab");
+    const selected=engine === "event_verified" && !isBass();
+    primary.classList.toggle("hidden", isBass() || !has || !state.current?.mine && !state.viewer?.admin && !recommended?.ready);
+    primary.disabled=!!task.busy_engine || selected && ["queued","working"].includes(status) || recommended?.available === false;
+    primary.textContent=selected && status === "working" ? "統整模型中…" : selected && status === "queued" ? "建議譜排隊中" :
+      recommended?.stale ? "更新建議譜" : recommended?.ready || selected && status === "done" ? "查看建議譜" : "產生建議譜";
     const download = $("#tabEngineMidi");
     download.classList.toggle("hidden", status !== "done");
     if (status === "done") download.href = isBass() ? `/api/jobs/${jobId}/export/midi/bass` : `/api/jobs/${jobId}/guitar-midi/${engine}`;
@@ -445,6 +471,7 @@ const TabStudio = (() => {
           if (!current() || dirty || saving) return;
           state.current = refreshed;
           $("[data-method='cross_verified']")?.classList.toggle("hidden", !refreshed.result?.methods?.cross_verified?.length);
+          $("[data-method='event_verified']")?.classList.toggle("hidden", !refreshed.result?.methods?.event_verified?.length);
           state.tabJob = null;
           await loadContinuousTab();
           renderStemDownloads();
@@ -543,15 +570,37 @@ const TabStudio = (() => {
       : state.tabEngine === "hybrid" ? "整合 v2 · 實驗"
       : state.tabEngine === "verified" ? "音訊校驗 · 實驗"
       : state.tabEngine === "cross_verified" ? "交叉校驗 · 實驗"
+      : state.tabEngine === "event_verified" ? "建議譜 · 尚需核對"
       : state.current.pure_guitar || state.current.result.guitar_tab?.source === "original"
       ? "純吉他"
       : "吉他分離軌";
     const warning = [];
     const verified = state.tabVerification, summary = $("#verificationSummary");
-    summary.classList.toggle("hidden", isBass() || !["verified", "cross_verified"].includes(state.tabEngine) || !verified);
-    $("#verificationPreviewPanel").classList.toggle("hidden", isBass() || !["verified", "cross_verified"].includes(state.tabEngine) || !verified);
+    summary.classList.toggle("hidden", isBass() || !["verified", "cross_verified", "event_verified"].includes(state.tabEngine) || !verified);
+    $("#verificationPreviewPanel").classList.toggle("hidden", isBass() || !["verified", "cross_verified", "event_verified"].includes(state.tabEngine) || !verified);
     if (verified) summary.textContent = `校驗 ${verified.reviewed_notes} 音 · 調整 ${verified.changed_notes} 音 · ${verified.uncertain_notes} 音仍有疑點。${verified.calibrated_pitches ? `使用 ${verified.calibrated_pitches} 個私人校準音高。` : ""}音頻相似度不是正確率；原版與你的修正保留。`;
     if (verified?.version === 2) summary.textContent = `${verified.independent_models.length} 個音符模型 · ${verified.chord_sources.length} 種和弦證據 · ${verified.conflict_notes} 處交叉疑點 · 調整 ${verified.changed_notes} 音。和弦只作提示，原版保留；相似度不等於正確率。`;
+    const events = state.tabEventReview;
+    if (state.tabEngine === "event_verified" && events) summary.textContent += ` 補 ${events.added_notes} 音 · 調整起音 ${events.adjusted_onsets} 處 · ${events.review_candidates} 處待確認${events.original_mix_checked ? " · 已回查原曲" : ""}。重複樂句僅作提示，不自動複製或訓練。`;
+    const eventBox = $("#eventReviewCandidates");
+    eventBox.replaceChildren();
+    const reviewItems = state.tabEngine === "event_verified" && events ? [
+      ...(events.suggestions || []).slice(0, 12).map((item) => ({ start: item.start, label: item.kind === "possible_retrigger" ? "疑似重新撥弦" : "疑似假音" })),
+      ...(events.repeat_evidence?.examples || []).slice(0, 4).flatMap((item) => item.occurrences.slice(0, 3).map((start) => ({ start, label: "重複樂句" }))),
+    ] : [];
+    $("#eventReviewPanel").classList.toggle("hidden", isBass() || !reviewItems.length);
+    for (const item of reviewItems) {
+      const button = document.createElement("button"), id = jobId;
+      button.type = "button";
+      button.className = "text-button";
+      button.textContent = `${item.label} · ${durationText(item.start)}`;
+      button.addEventListener("click", () => {
+        if (jobId !== id) return;
+        $("#verificationPlayer").pause();
+        $("#audioPlayer").currentTime = Math.max(0, item.start - .2);
+      });
+      eventBox.append(button);
+    }
     if (isBass() && diagnostics.omittedNotes) warning.push(`${diagnostics.omittedNotes} 音無法配置到目前弦格，可試 Drop D／五弦或檢查誤音`);
     const rhythmWarning = !rhythm.manual && !state.current.result.rhythm?.bpm
       ? `尚無拍點分析，暫以 ${rhythm.bpm} BPM 排版，可手動調整。`

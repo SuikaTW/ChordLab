@@ -450,6 +450,7 @@ async function openJob(id, isPublic = false, reveal = false) {
   state.guitarTabEngine = "basic_pitch";
   state.tabEngine = "basic_pitch";
   $("#tabEngine").value = "basic_pitch";
+  $("#tabEngineOption").open = false;
   TabStudio.reset(id);
   const requestId = ++state.openRequest;
   clearTimeout(state.chordRefinementTimer);
@@ -469,6 +470,16 @@ async function openJob(id, isPublic = false, reveal = false) {
       isPublic ? `/api/public/jobs/${id}?include_notes=false` : `/api/jobs/${id}?include_notes=false`,
     );
     if (requestId !== state.openRequest) return;
+    if (job.status === "done") {
+      // A saved personal score takes precedence over automatic recommendations.
+      const personal = state.viewer ? await api(`/api/jobs/${id}/tab?instrument=guitar`) : {};
+      if (requestId !== state.openRequest) return;
+      const savedEngine = personal.document?.source_engine || (personal.document ? "basic_pitch" : null);
+      const variants = job.result?.guitar_tab?.variants || {};
+      const selected = savedEngine || ["event_verified", "hybrid", "gaps"].find((name) => variants[name]?.status === "done") || "basic_pitch";
+      state.tabEngine = state.guitarTabEngine = selected;
+      $("#tabEngine").value = selected;
+    }
     state.currentPublic = isPublic;
     state.current = job;
     if (!isPublic) localStorage.setItem(lastJobKey(), id);
@@ -585,6 +596,15 @@ function renderWorkspace() {
       $(".method-switch").append(crossButton);
     }
     crossButton.classList.toggle("hidden", !state.current.result.methods.cross_verified?.length);
+    let eventButton = $("[data-method='event_verified']");
+    if (!eventButton) {
+      eventButton = document.createElement("button");
+      eventButton.dataset.method = "event_verified";
+      eventButton.textContent = "建議版";
+      eventButton.addEventListener("click", () => switchMethod("event_verified"));
+      $(".method-switch").append(eventButton);
+    }
+    eventButton.classList.toggle("hidden", !state.current.result.methods.event_verified?.length);
     $("[data-method='ensemble']").classList.toggle("hidden", !state.current.result.methods.ensemble?.length);
     if (!state.current.result.methods[state.method]?.length) {
       state.method = state.current.result.methods.chordino.length ? "chordino" : "basic_pitch";
@@ -986,7 +1006,8 @@ async function loadContinuousTab() {
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
     state.tabNotes = payload?.notes || [];
     state.tabProfile = payload?.profile || "general";
-    state.tabVerification = ["verified", "cross_verified"].includes(engine) ? payload?.refinement : null;
+    state.tabVerification = ["verified", "cross_verified", "event_verified"].includes(engine) ? payload?.refinement : null;
+    state.tabEventReview = engine === "event_verified" ? payload?.event_review : null;
     state.tabSource = payload ? instrument : "unavailable";
   } catch (error) {
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
@@ -999,7 +1020,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=7");
+    const worker = new Worker("/static/tab-worker.js?v=8");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
@@ -1036,7 +1057,7 @@ function assignTabNotes(notes) {
         capo: state.tabInstrument === "bass" ? 0 : state.capo,
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
-        useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid", "cross_verified"].includes(state.tabEngine) && $("#tabFingering").value === "model",
+        useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });
   });
@@ -1163,10 +1184,10 @@ function chords() {
 }
 function renderTimeline() {
   const summary = $("#comparisonSummary");
-  summary.classList.toggle("hidden", !["ensemble", "chord_v2", "cross_verified"].includes(state.method));
-  if (state.method === "cross_verified") {
-    const info = state.current.result.cross_chord_review || {};
-    summary.textContent = `交叉校驗 · 調整 ${info.changed_segments || 0} 段 · ${info.review_segments || 0} 段有候選；原版與 Key 保留，仍需試聽。`;
+  summary.classList.toggle("hidden", !["ensemble", "chord_v2", "cross_verified", "event_verified"].includes(state.method));
+  if (["cross_verified", "event_verified"].includes(state.method)) {
+    const info = state.current.result[state.method === "event_verified" ? "event_verified_chord_review" : "cross_chord_review"] || {};
+    summary.textContent = `${state.method === "event_verified" ? "建議版" : "交叉校驗"} · 調整 ${info.changed_segments || 0} 段 · ${info.review_segments || 0} 段有候選；原版與 Key 保留，仍需試聽。`;
   }
   if (state.method === "chord_v2") {
     summary.textContent = "實驗版 · 分開檢查低音與和弦音，再依前後段落判斷；仍可能誤判，原版已保留。";
@@ -1178,7 +1199,7 @@ function renderTimeline() {
   const list = chords(), duration = state.current.duration || 1, timeline = $("#timeline");
   timeline.innerHTML = list.map((segment, index) => {
     const played = playedChord(segment.chord);
-    const review = ["ensemble", "chord_v2", "cross_verified"].includes(state.method) && needsReview(segment);
+    const review = ["ensemble", "chord_v2", "cross_verified", "event_verified"].includes(state.method) && needsReview(segment);
     return `<button class="chord-block ${
       index === state.selected ? "selected" : ""
     } ${review ? "needs-review" : ""}" ${review ? 'title="這段需要檢查，點選查看候選"' : ""} data-segment="${index}" style="width:${
@@ -1234,7 +1255,7 @@ function renderEditor() {
   renderCandidates(segment, editable);
 }
 function renderCandidates(segment, editable) {
-  const v2 = ["chord_v2", "cross_verified"].includes(state.method);
+  const v2 = ["chord_v2", "cross_verified", "event_verified"].includes(state.method);
   const box = $("#chordCandidates"), comparison = v2 && segment?.refinement?.uncertain ?
     { candidates: segment.refinement.alternatives } : state.method === "ensemble" ? segment?.comparison : null;
   const jobId = state.current?.id;
@@ -1242,7 +1263,7 @@ function renderCandidates(segment, editable) {
   box.replaceChildren();
   if (!comparison || !needsReview(segment)) return;
   const explanation = document.createElement("p");
-  explanation.textContent = state.method === "cross_verified" ? "獨立和弦辨識有不同判斷；原音與吉他音符只作校驗，仍建議試聽確認。" : v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
+  explanation.textContent = ["cross_verified", "event_verified"].includes(state.method) ? "獨立和弦辨識有不同判斷；原音與吉他音符只作校驗，仍建議試聽確認。" : v2 ? "證據接近，建議試聽。以下是此段開頭的候選，不是正確率。" :
     comparison.status === "detail" ? "根音與和弦家族相同，延伸音或低音不同。" : "BTC 對這一段有不同判斷；目前保留原本結果。";
   box.append(explanation);
   for (const candidate of comparison.candidates || []) {

@@ -54,6 +54,7 @@ def run():
             page.route(f"**/api/jobs/{JOB}/guitar-analysis?engine=verified",lambda route: route.fulfill(json={"status":"done","variants":[{"engine":"verified","available":True,"ready":True}]}))
             page.evaluate("state.current.result.guitar_tab.variants ||= {}; state.current.result.guitar_tab.variants.verified={status:'done'}")
             page.locator('[data-result-view="tab"]').click()
+            page.locator("#tabEngineOption summary").click()
             page.locator("#tabEngine").select_option("verified")
             page.locator("#verificationSummary").wait_for()
             assert "調整 2 音" in page.locator("#verificationSummary").inner_text()

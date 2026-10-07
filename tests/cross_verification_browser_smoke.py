@@ -1,5 +1,6 @@
 """Read-only live cross-check UI, preview and independent chord-method regression."""
 import sys
+import argparse
 import time
 from pathlib import Path
 from dotenv import load_dotenv
@@ -12,6 +13,9 @@ JOB="cb4455ee4bce40b3974383fb393d835d"
 
 
 def run():
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--engine",choices=["cross_verified","event_verified"],default="cross_verified")
+    engine=parser.parse_args().engine
     token=main.sign_session(main.USERNAME,"local",int(time.time())+3600)
     with sync_playwright() as p:
         browser=p.chromium.launch(executable_path="/opt/google/chrome/chrome",headless=True,args=["--no-sandbox"])
@@ -23,30 +27,44 @@ def run():
             page.goto(BASE)
             page.locator(f'[data-job="{JOB}"]').click()
             page.locator('[data-result-view="tab"]').click()
-            page.locator("#tabEngine").select_option("cross_verified")
+            page.locator("#tabEngineOption summary").click()
+            page.locator("#tabEngine").select_option(engine)
             page.locator("#verificationSummary").wait_for()
             assert "3 個音符模型" in page.locator("#verificationSummary").inner_text()
-            assert page.locator("#tabEngineMidi").get_attribute("href").endswith("cross_verified")
+            assert page.locator("#tabEngineMidi").get_attribute("href").endswith(engine)
+            if engine=="event_verified":
+                assert "補" in page.locator("#verificationSummary").inner_text()
+                page.evaluate("async () => {state.tabEventReview.suggestions=[{kind:'possible_false_note',start:3}]; await TabStudio.render();}")
+                page.locator("#eventReviewPanel summary").click()
+                page.locator("#eventReviewCandidates button").first.click()
+                assert abs(page.locator("#audioPlayer").evaluate("p=>p.currentTime")-2.8)<.05
             page.locator("#continuousTab .tab-system").first.wait_for()
             page.locator("#verificationPreviewPanel summary").click()
             page.locator("#playVerification").click()
             page.wait_for_function("() => !document.querySelector('#verificationPlayer').paused")
-            assert "engine=cross_verified" in page.locator("#verificationPlayer").get_attribute("src")
+            assert f"engine={engine}" in page.locator("#verificationPlayer").get_attribute("src")
             page.locator('[data-result-view="chords"]').click()
             page.locator(".method-options summary").click()
-            page.locator('[data-method="cross_verified"]').click()
-            assert "交叉校驗" in page.locator("#comparisonSummary").inner_text()
+            page.locator(f'[data-method="{engine}"]').click()
+            assert ("建議版" if engine=="event_verified" else "交叉校驗") in page.locator("#comparisonSummary").inner_text()
             page.locator("#timeline .chord-block").nth(1).click()
             page.locator(".chord-chart").wait_for()
             page.locator("#capoSelect").select_option("2")
             assert "原和弦" in page.locator("#selectedChord").inner_text()
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth+1")
+            worker=page.evaluate("""() => new Promise((resolve,reject) => {
+              const w=new Worker('/static/tab-worker.js?v=8');
+              w.onmessage=e=>{w.terminate();resolve(e.data)};
+              w.onerror=e=>{w.terminate();reject(new Error(e.message))};
+              w.postMessage({notes:[{start:0,end:.5,midi:64,velocity:.7}],options:{position:'high'}});
+            })""")
+            assert worker["result"]["notes"][0]["fret"]==0, "Worker must use the open-string fix, not cached v7"
             # Simulate disagreement to exercise candidate/marker controls without a save.
             page.evaluate("const s=chords()[state.selected]; s.refinement={uncertain:true,alternatives:[{chord:'Am',share:1}],source:'cross_verified'}; renderTimeline(); renderEditor();")
             assert page.locator("#chordCandidates").is_visible()
             assert page.locator("#timeline .needs-review").count()>=1
             assert not errors,errors
-            print(name,"cross TAB/chords/candidates/preview/capo/viewport passed",flush=True)
+            print(name,engine,"TAB/chords/candidates/preview/capo/viewport passed",flush=True)
             context.close()
         browser.close()
 

@@ -177,6 +177,44 @@ class GuitarEngineTests(unittest.TestCase):
         self.assertEqual(result["methods"],self.baseline["methods"])
         self.assertEqual(self.post("cross_verified").json()["status"],"done")
 
+    def test_event_version_is_independent_and_can_check_original_mix(self):
+        self.assertEqual(self.post("event_verified").status_code,202)
+        baseline=paths(self.directory,"basic_pitch")[0].read_bytes()
+        # Mixed input: original must be passed explicitly inside the own-job sandbox.
+        with main.db() as connection:
+            result={**self.baseline,"guitar_tab":{"status":"done","source":"separated"},"separation":{"stems":["original","guitar"]},"key":{"label":"C major"}}
+            connection.execute("UPDATE jobs SET pure_guitar=0,result=?",(json.dumps(result),))
+        (self.directory/"stems").mkdir()
+        (self.directory/"stems/guitar.wav").write_bytes(b"guitar")
+        def command(args,**kwargs):
+            if "--engine" in args:
+                candidate=args[args.index("--engine")+1]
+                Path(args[3]).write_text(json.dumps({"profile":main.GUITAR_ENGINES[candidate]["profile"],"notes":[]}))
+                Path(args[4]).write_bytes(b"MThd")
+                return
+            self.assertIn("--event-review",args)
+            self.assertEqual(args[args.index("--original-audio")+1],str(self.directory/"audio.wav"))
+            self.assertIn("--cross-evidence",args)
+            Path(args[3]).write_text(json.dumps({"profile":"guitar_event_verified_v1","notes":[],"event_review":{"added_notes":1}}))
+            Path(args[4]).write_bytes(b"MThd")
+            Path(args[args.index("--preview")+1]).write_bytes(b"RIFF")
+        with patch.object(main,"run_command",side_effect=command): main.process_guitar_task("song")
+        self.assertEqual(paths(self.directory,"basic_pitch")[0].read_bytes(),baseline)
+        self.assertEqual(self.client.get("/api/jobs/song/verification-preview?engine=event_verified").content,b"RIFF")
+        self.assertEqual(self.client.get("/api/jobs/song/notes/guitar?engine=event_verified").json()["event_review"]["added_notes"],1)
+        self.assertEqual(self.client.get("/api/jobs/song").json()["result"]["key"],{"label":"C major"})
+        payload=self.client.get("/api/jobs/song/notes/guitar?engine=event_verified").json()
+        self.assertEqual(payload["recommendation"]["preparation"],{"basic_pitch":"cached","gaps":"done","tabcnn":"done","hybrid":"done"})
+        self.assertEqual(self.post("event_verified").json()["status"],"done")
+        self.assertEqual(main.executor.submit.call_count,1)
+        # A new raw-model result invalidates the recommendation, not the original.
+        paths(self.directory,"gaps")[0].write_text('{"profile":"guitar_gaps_v1","notes":[{"midi":65}]}')
+        task=self.client.get("/api/jobs/song/guitar-analysis?engine=event_verified").json()
+        self.assertEqual(task["status"],"pending")
+        self.assertTrue(next(v for v in task["variants"] if v["engine"]=="event_verified")["stale"])
+        self.assertEqual(self.post("event_verified").json()["status"],"queued")
+        self.assertEqual(main.executor.submit.call_count,2)
+
     def test_cross_chord_publication_preserves_selection_key_and_concurrent_edits(self):
         self.post("cross_verified")
         def command(args,**kwargs):

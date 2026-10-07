@@ -21,6 +21,29 @@ ChordLab 是部署於單一伺服器的私人音樂分析工作區。它可以�
 
 「交叉校驗（實驗）」是另一個獨立版本，讀取現有 Basic Pitch、GAPS、TabCNN 音符與 Chordino／BTC／和弦 v2 證據。GAPS 與整合版只算同一模型；MIDI、TAB、由同一批音符推算的和弦不另算一票。不自動額外跑缺少的大模型，畫面會顯示實際可用數量。先檢查分歧片段，兩個獨立音符模型支持時可提出半音／八度以外的附近候選；和弦只是小權重提示，原音兩個時間窗都改善才改，再對完成結果複查。正確的非和弦音、經過音、人工修正、事件數量與時間不強改。TabCNN 弦位必須先通過標準調弦音高一致性檢查，仍不保證原曲弦位。
 
+主要入口是「產生／查看建議譜」，另存為 `guitar-event-verified`。缺少的已安裝 Basic Pitch、GAPS、TabCNN、hybrid 會在同一筆排隊工作中補跑，仍遵守既有共用分析槽與配額；單純查看完成的建議譜不重新分析。原始版本收進預設關閉的「進階：比較原始版本」。開啟歌曲優先載入已儲存的私人修正譜，否則優先選完成的建議譜；輸入版本改變會標記「更新建議譜」，由使用者明確更新。
+
+建議譜先做上述交叉校驗，再保守檢查事件：至少兩個獨立模型提出同音／相近起音、原音有撥弦瞬間與兩個時間窗的基音、加入後的頻譜擬合改善，才補漏音。最多補 128 音、檢查 512 個漏音候選，完成後再複查，證據消失就撤回新增。起音只允許最多 60 ms 的修正，須模型與音訊瞬間一致；延音結束時間不強改。混音歌曲額外回查原曲，原曲只作確認／否決，不能當另一個吉他模型票。疑似假音、長音中重新撥弦與重複樂句先列為待確認，點選可跳到原曲位置，不自動刪音、切長音或複製段落。所有版本、人工 TAB、原和弦與 Key 保留；統整是保守的建議，不保證一定最準確，也不是自動訓練模型。
+
+弦位的「參考模型」與「重新配置易彈把位」是不同目的：前者只有原指法線索，後者尋找可彈替代方案；同一音高可能有多種正確按法。空弦不受中／高把位偏好的扣分，仍考慮弦位衝突、延音與整句移動。
+
+### 可重跑的對照集
+
+第一批使用 [GuitarSet v1.1.0](https://zenodo.org/records/3371780)，由 Qingyang Xi、Rachel M. Bittner、Johan Pauwels、Xuzhou Ye、Juan P. Bello 建立（ISMIR 2018），音訊與標註採 CC BY 4.0。選取麥克風錄音及原始 JAMS，同時保存音符、弦格與不同來源的和弦標註。官方已列出的兩筆時間偏移及一筆重複音符檔案直接排除，不自行更改原始答案。原始壓縮檔使用官方 MD5 校驗；每段音訊、原始標註、轉換後參考譜另外保存 SHA-256、來源、授權與演奏者。
+
+資料留在 HDD 的 `/mnt/sdb/chordlab/benchmarks/reference-corpus`，不放進公開歌曲庫或 GitHub。開發／回歸組按演奏者分開，推論不接收參考譜；評估分開報告音高＋起音、延音、實際前端 TAB 與弦格一致率，以及各來源和弦標註的時間加權一致率。每個程式版本有獨立雜湊及報告，可重跑、續跑、比較；不從模型預測製造標準答案，也不自動調參或訓練。
+
+**GuitarSet 可能／已被現有模型用於訓練，這是回歸集，不是獨立盲測。** 首批六段是同一首 Bossa Nova 曲目的不同演奏，不能代表各曲風準確度。新曲若要加入可靠對照，必須確認授權、同一錄音／編曲／調弦／Capo，以及譜與錄音的時間對齊；網路簡化和弦譜不適合作為逐音 TAB 答案。使用者自行錄音與核對譜，是補足未見過資料的重要來源。私人修正仍只屬於該使用者，不會因這個公開對照集被共享。
+
+```bash
+.venv/bin/python tools/reference_corpus.py /mnt/sdb/chordlab/benchmarks/reference-corpus --download --count 6
+PYTHONPATH="$PWD/.venv/lib/python3.14/site-packages" nice -n 10 uv run --no-project --python "$PWD/.venv/bin/python" --with numpy --with scipy python tools/benchmark_corpus.py /mnt/sdb/chordlab/benchmarks/reference-corpus --infer
+.venv-guitar/bin/python tests/event_verification_checks.py
+.venv-guitar/bin/python tests/reference_corpus_checks.py
+```
+
+下載為明確操作，之後重跑會核對並重用檔案。推論沿用正式服務的固定模型、網路隔離沙箱與 CPU 兩執行緒限制，依序處理；啟動前若有正式分析工作會退出，稍後可續跑。不啟用常駐自我訓練排程。`report.json` 是最近進度，`report-<pipeline>.json` 保留各版本測量。
+
 完成後，「和弦」頁的分析方法也會出現交叉校驗版：只比對其他聲學辨識提出、且覆蓋原段落至少 80% 的候選，回查完整和聲音訊與吉他音符；延伸和弦新增的音還需基音證據。原方法、選取方法與 Key 不自動覆寫。若分析期間有人修改原和弦，雜湊檢查會阻止發布過期的和弦副本。MIDI、合成試聽與私人修正仍獨立保存；目前僅支援吉他。
 
 `tools/benchmark_cross_verification.py` 與 `tests/cross_verification_checks.py` 涵蓋整音候選、重複模型票、錯誤和弦／多數票、靜音、弦位一致性、人工修正及候選和弦音訊檢查。合成測試只是可重現的驗證，不代表真實歌曲準確率。

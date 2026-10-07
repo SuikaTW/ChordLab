@@ -43,7 +43,7 @@ from app.light_tasks import LightTaskPool, PoolBusy
 from app.preparation import DownloadPreparation
 from app.tab_models import TabDocument
 from app.chord_comparison import compare_chords
-from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available
+from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available, recommendation_current, recommendation_digest, RECOMMENDATION_REVISION
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1254,16 +1254,21 @@ def guitar_task_status(request: Request, job_id: str, engine: str = "basic_pitch
     if status == "unavailable" and guitar_uses_original(row, result):
         status = "failed" if (result.get("separation") or {}).get("midi_errors", {}).get("guitar") else "pending"
     variants = []
+    recommended_stale = False
     for name, info in GUITAR_ENGINES.items():
         notes_path, midi_path = guitar_paths(JOBS / job_id, name)
         ready = notes_path.is_file() and midi_path.is_file()
+        stale = name == "event_verified" and ready and not recommendation_current(JOBS/job_id,result)
+        if stale: ready=False;recommended_stale=True
         if name == "basic_pitch":
             ready = ready or "guitar" in (result.get("separation") or {}).get("midi_stems", [])
-        variants.append({"engine": name, "label": info["label"], "available": guitar_engine_available(ROOT, name), "ready": ready})
+        variants.append({"engine": name, "label": info["label"], "available": guitar_engine_available(ROOT, name), "ready": ready, "stale": stale})
         if name == engine and name != "basic_pitch":
             status = "done" if ready else (result.get("guitar_tab") or {}).get("variants", {}).get(name, {}).get("status", "pending")
     if task and task["engine"] == engine:
         status = task["status"]
+    if engine == "event_verified" and recommended_stale and status not in {"queued","working","failed"}:
+        status="pending"
     return {"status": status, "engine": engine, "variants": variants,
             "busy_engine": task["engine"] if task and task["status"] in {"queued", "working"} else None}
 
@@ -1279,7 +1284,7 @@ def get_guitar_engine_midi(request: Request, job_id: str, engine: str):
 
 
 @app.get("/api/jobs/{job_id}/verification-preview")
-def verification_preview(request: Request, job_id: str, engine: Literal["verified", "cross_verified"] = "verified"):
+def verification_preview(request: Request, job_id: str, engine: Literal["verified", "cross_verified", "event_verified"] = "verified"):
     accessible_job(request, job_id)
     name = GUITAR_ENGINES[engine]["file"]
     return FileResponse(job_file(job_id,f"stem-midi/{name}.preview.wav"), media_type="audio/wav")
@@ -1298,7 +1303,7 @@ def start_guitar_task(request: Request, job_id: str, engine: str = "basic_pitch"
     if row["status"] != "done" or not original and "guitar" not in (separation.get("all_stems") or separation.get("stems") or []):
         raise HTTPException(400, "這首歌沒有可分析的吉他分軌")
     notes_path, midi_path = guitar_paths(JOBS / job_id, engine)
-    if (engine == "basic_pitch" and "guitar" in separation.get("midi_stems", [])) or notes_path.is_file() and midi_path.is_file():
+    if (engine == "basic_pitch" and "guitar" in separation.get("midi_stems", [])) or notes_path.is_file() and midi_path.is_file() and (engine != "event_verified" or recommendation_current(JOBS/job_id,result)):
         return {"status": "done"}
     job_file(job_id, "audio.wav" if original else "stems/guitar.wav")
     if engine in {"verified", "cross_verified"} and not any(guitar_paths(JOBS / job_id, name)[0].is_file() for name in ("hybrid","gaps","basic_pitch","tabcnn")):
@@ -1443,18 +1448,18 @@ def process_guitar_task(job_id: str) -> None:
                 else:
                     guitar = result.setdefault("guitar_tab", {"source": "original" if original else "separated", "status": "pending"})
                     guitar.setdefault("variants", {})[engine] = {"profile": GUITAR_ENGINES[engine]["profile"], "status": status}
-                    if engine == "cross_verified" and status == "done":
+                    if engine in {"cross_verified", "event_verified"} and status == "done":
                         evidence = json.loads(guitar_paths(JOBS / job_id,engine)[0].read_text())
                         review = evidence.get("chord_review",{})
                         baseline = review.get("baseline_method")
                         current = result.get("methods",{}).get(baseline,[])
                         checksum = hashlib.sha256(json.dumps(current,sort_keys=True,separators=(",",":")).encode()).hexdigest()
                         if evidence.get("chords") and checksum == review.get("baseline_digest"):
-                            if not any(segment.get("manual") for segment in result.get("methods",{}).get("cross_verified",[])):
-                                result.setdefault("methods",{})["cross_verified"] = evidence["chords"]
-                            result["cross_chord_review"] = review
+                            if not any(segment.get("manual") for segment in result.get("methods",{}).get(engine,[])):
+                                result.setdefault("methods",{})[engine] = evidence["chords"]
+                            result[f"{engine}_chord_review" if engine == "event_verified" else "cross_chord_review"] = review
                         elif evidence.get("chords"):
-                            result["cross_chord_review"] = {"status":"baseline_changed_during_analysis"}
+                            result[f"{engine}_chord_review" if engine == "event_verified" else "cross_chord_review"] = {"status":"baseline_changed_during_analysis"}
                 connection.execute("UPDATE jobs SET result=?,progress=100,message='分析完成',updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False), int(time.time()), job_id))
             connection.execute("UPDATE guitar_tasks SET status=?,updated_at=? WHERE job_id=?", (status, int(time.time()), job_id))
     except Exception as exc:
@@ -1963,7 +1968,33 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
         if engine != "basic_pitch":
             notes_path, midi_path = guitar_paths(directory, engine)
             temporary_notes, temporary_midi = notes_path.with_suffix(".json.tmp"), midi_path.with_suffix(".mid.tmp")
-            if engine in {"verified", "cross_verified"}:
+            preparation = {}
+            if engine == "event_verified":
+                # One explicit submission, one durable task and one heavy slot.
+                # Only missing installed raw models are prepared; never count
+                # previous verification variants as independent votes.
+                for candidate in ("basic_pitch","gaps","tabcnn","hybrid"):
+                    cached_notes,cached_midi=guitar_paths(directory,candidate)
+                    if cached_notes.is_file() and cached_midi.is_file():
+                        preparation[candidate]="cached";continue
+                    if not guitar_engine_available(ROOT,candidate):
+                        preparation[candidate]="unavailable";continue
+                    completed,failures=transcribe_guitar_tab(job_id,directory,direct_source=direct_source,engine=candidate)
+                    prepared="guitar" in completed
+                    preparation[candidate]="done" if prepared else "failed"
+                    with db() as connection:
+                        current_row=connection.execute("SELECT result FROM jobs WHERE id=?",(job_id,)).fetchone()
+                        if current_row:
+                            current_result=json.loads(current_row["result"] or "{}")
+                            guitar=current_result.setdefault("guitar_tab",{})
+                            if candidate=="basic_pitch" and prepared:
+                                guitar.update(profile="guitar_v2",status="done",source="original" if direct_source is not None else "separated")
+                                separation=current_result.setdefault("separation",{})
+                                separation["midi_stems"]=list(dict.fromkeys([*separation.get("midi_stems",[]),"guitar"]))
+                            elif candidate!="basic_pitch":
+                                guitar.setdefault("variants",{})[candidate]={"profile":GUITAR_ENGINES[candidate]["profile"] if prepared else None,"status":"done" if prepared else "failed"}
+                            connection.execute("UPDATE jobs SET result=?,updated_at=? WHERE id=?",(json.dumps(current_result,ensure_ascii=False),int(time.time()),job_id))
+            if engine in {"verified", "cross_verified", "event_verified"}:
                 base = next((guitar_paths(directory, name)[0] for name in ("hybrid","gaps","basic_pitch","tabcnn") if guitar_paths(directory,name)[0].is_file()), None)
                 if base is None:
                     raise ValueError("Verification needs an existing note version")
@@ -1983,7 +2014,7 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
                 evidence_path = output_dir / "cross-evidence.tmp.json"
                 try:
                     reference_path.write_text(json.dumps(references), encoding="utf-8")
-                    if engine == "cross_verified":
+                    if engine in {"cross_verified", "event_verified"}:
                         models = {}
                         for name in ("basic_pitch","gaps","hybrid","tabcnn"):
                             path = guitar_paths(directory,name)[0]
@@ -1992,15 +2023,17 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
                         with db() as connection:
                             job = connection.execute("SELECT result FROM jobs WHERE id=?",(job_id,)).fetchone()
                         current = json.loads(job["result"] or "{}") if job else {}
+                        input_digest=recommendation_digest(directory,current) if engine=="event_verified" else None
                         methods = current.get("methods",{})
                         evidence_path.write_text(json.dumps({"models":models,"methods":{name:methods[name] for name in ("chordino","btc","chord_v2") if name in methods},"active_method":current.get("active_method")}),encoding="utf-8")
                     run_command([str(GUITAR_PYTHON), str(ROOT / "tools/audio_verification_worker.py"), str(source),
                         str(temporary_notes), str(temporary_midi), "--notes-cache", str(base), "--references", str(reference_path), "--preview", str(preview_path),
-                        *(["--cross-evidence",str(evidence_path),"--harmony-audio",str(directory/"harmony.wav" if (directory/"harmony.wav").is_file() else directory/"audio.wav")] if engine == "cross_verified" else []),
+                        *(["--cross-evidence",str(evidence_path),"--harmony-audio",str(directory/"harmony.wav" if (directory/"harmony.wav").is_file() else directory/"audio.wav")] if engine in {"cross_verified", "event_verified"} else []),
+                        *(["--event-review", *(["--original-audio",str(directory/"audio.wav")] if direct_source is None else [])] if engine == "event_verified" else []),
                         *[argument for reference in references for argument in ("--reference-audio",reference["audio"])]], timeout=1800)
                 finally:
                     reference_path.unlink(missing_ok=True)
-                    if engine == "cross_verified":
+                    if engine in {"cross_verified", "event_verified"}:
                         evidence_path.unlink(missing_ok=True)
             else:
                 run_command([str(GUITAR_PYTHON), str(ROOT / "tools/guitar_worker.py"), str(source),
@@ -2009,7 +2042,12 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
             payload = json.loads(temporary_notes.read_text(encoding="utf-8"))
             if payload.get("profile") != GUITAR_ENGINES[engine]["profile"] or not isinstance(payload.get("notes"), list):
                 raise ValueError("Invalid guitar experiment output")
-            if engine in {"verified", "cross_verified"}:
+            if engine=="event_verified":
+                payload["recommendation"]={"revision":RECOMMENDATION_REVISION,"input_digest":input_digest,
+                    "preparation":preparation,"selection_policy":"raw_model_families_audio_gated_no_derived_double_votes",
+                    "confidence":"unverified_recommendation_not_guaranteed_most_accurate"}
+                temporary_notes.write_text(json.dumps(payload,ensure_ascii=False),encoding="utf-8")
+            if engine in {"verified", "cross_verified", "event_verified"}:
                 preview_path.replace(output_dir / f"{GUITAR_ENGINES[engine]['file']}.preview.wav")
             temporary_midi.replace(midi_path)
             temporary_notes.replace(notes_path)
@@ -2201,7 +2239,7 @@ class ChordUpdate(BaseModel):
 
 @app.put("/api/jobs/{job_id}/chords")
 def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
-    if update.method not in {"basic_pitch", "chordino", "ensemble", "chord_v2", "cross_verified"}:
+    if update.method not in {"basic_pitch", "chordino", "ensemble", "chord_v2", "cross_verified", "event_verified"}:
         raise HTTPException(400, "未知的分析方式")
     row = editable_job(request, job_id)
     if not row["result"]:
@@ -2222,7 +2260,7 @@ def save_chords(request: Request, job_id: str, update: ChordUpdate) -> dict:
         if update.method not in result.get("methods", {}):
             raise HTTPException(400, "這首歌沒有這種分析結果")
         previous = {(s["start"], s["end"], s["chord"]): s for s in result["methods"][update.method]}
-        if update.method in {"chord_v2", "cross_verified"}:
+        if update.method in {"chord_v2", "cross_verified", "event_verified"}:
             for segment in chords:
                 old = previous.get((segment["start"], segment["end"], segment["chord"]))
                 if old and old.get("refinement"):
