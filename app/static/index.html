@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=24">
+  <link rel="stylesheet" href="/static/style.css?v=25">
 </head>
 <body>
   <header class="topbar">
@@ -93,7 +93,7 @@
             <button id="buildChordV2" class="text-button hidden" type="button">分析和弦 v2（實驗）</button>
             <p id="comparisonSummary" class="comparison-summary hidden" role="status"></p>
             <details id="localChordReviewPanel" class="practice-tools hidden"><summary>重查一小段</summary><div class="practice-controls"><label>開始（秒）<input id="reviewStart" type="number" min="0" step="0.1" value="0"></label><label>結束（秒）<input id="reviewEnd" type="number" min="0.5" step="0.1" value="20"></label><button id="reviewSelectedChord" type="button" class="text-button">使用選取段落</button><button id="reviewChords" type="button" class="secondary">重新檢查</button><button id="nextChordDoubt" type="button" class="text-button">下一個疑點</button></div><p id="localChordReviewStatus" role="status"></p><div id="localChordReviewCandidates" class="chord-candidates"></div><button id="applyChordReview" type="button" class="secondary hidden">確認並另存局部修正版</button></details>
-            <div class="timeline-wrap"><div class="timeline-ruler" id="timelineRuler"></div><div class="timeline" id="timeline"></div></div>
+            <div class="timeline-wrap"><div class="chord-follow-toolbar"><label><input type="checkbox" id="followChords" checked> 跟隨播放</label></div><div class="timeline-ruler" id="timelineRuler"></div><div class="timeline" id="timeline"></div></div>
 
             <div class="detail-grid">
               <section class="chord-detail">
@@ -162,6 +162,6 @@
   <script src="/static/chord-voicings.js?v=2" defer></script>
   <script src="/static/practice.js?v=1" defer></script>
   <script src="/static/chord-review.js?v=1" defer></script>
-  <script src="/static/app.js?v=42" defer></script>
+  <script src="/static/app.js?v=43" defer></script>
 </body>
 </html>

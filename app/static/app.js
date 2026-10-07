@@ -233,6 +233,15 @@ function bindEvents() {
     const button = event.target.closest("[data-start]");
     if (button) $("#audioPlayer").currentTime = Number(button.dataset.start);
   });
+  $("#followChords").checked = localStorage.getItem("followChords") !== "off";
+  $("#followChords").addEventListener("change", (event) => {
+    localStorage.setItem("followChords", event.target.checked ? "on" : "off");
+    state.chordTouched = -Infinity;
+    markPlaying();
+  });
+  for (const name of ["pointerdown", "touchstart", "wheel", "keydown"]) {
+    $("#timeline").addEventListener(name, () => { state.chordTouched = performance.now(); }, {passive:true});
+  }
   const player = $("#audioPlayer");
   player.addEventListener("timeupdate", paintPlayback);
   for (const name of ["loadedmetadata", "durationchange", "play", "pause", "ended", "seeking"]) {
@@ -292,9 +301,9 @@ function setResultView(view) {
   if (view === "tab") {
     loadContinuousTab();
     TabStudio.render();
-    animatePlayback();
   }
   paintPlayback();
+  animatePlayback();
 }
 function revealWorkspaceOnMobile() {
   if (!window.matchMedia("(max-width: 720px)").matches) return;
@@ -342,11 +351,12 @@ function animatePlayback() {
   const tick = (time) => {
     state.playFrame = null;
     if (
-      document.hidden || $("#audioPlayer").paused || state.page !== "workspace" || state.resultView !== "tab"
+      document.hidden || $("#audioPlayer").paused || state.page !== "workspace" || !["tab", "chords"].includes(state.resultView)
     ) return;
     if (time - (state.lastPlayPaint || 0) > 33) {
       state.lastPlayPaint = time;
       if (state.resultView === "tab") updateContinuousTab();
+      else markPlaying();
     }
     state.playFrame = requestAnimationFrame(tick);
   };
@@ -1227,12 +1237,17 @@ function renderTimeline() {
     node,
   })).sort((a, b) => a.start - b.start);
   state.chordActive = -1;
+  state.chordPlayhead = document.createElement("i");
+  state.chordPlayhead.className = "chord-playhead hidden";
+  state.chordPlayhead.setAttribute("aria-hidden", "true");
+  timeline.append(state.chordPlayhead);
   const ruler = $("#timelineRuler"), step = duration > 600 ? 120 : duration > 240 ? 60 : 30;
   let ticks = "";
   for (let t = 0; t <= duration; t += step) {
     ticks += `<span class="ruler-tick" style="left:${t / duration * 100}%">${durationText(t)}</span>`;
   }
   ruler.innerHTML = ticks;
+  markPlaying();
 }
 function selectSegment(index, seek = false) {
   state.chordNodes?.[state.selected]?.classList.remove("selected");
@@ -1248,10 +1263,27 @@ function markPlaying() {
     time = $("#audioPlayer").currentTime,
     candidate = ChordLabLayout.locate(entries, time),
     index = candidate >= 0 && time < entries[candidate].end ? candidate : -1;
-  if (index === state.chordActive) return;
-  entries[state.chordActive]?.node.classList.remove("playing");
-  entries[index]?.node.classList.add("playing");
-  state.chordActive = index;
+  if (index !== state.chordActive) {
+    entries[state.chordActive]?.node.classList.remove("playing");
+    entries[index]?.node.classList.add("playing");
+    state.chordActive = index;
+  }
+  const head = state.chordPlayhead, active = entries[index];
+  if (!head) return;
+  head.classList.toggle("hidden", !active);
+  if (!active || state.resultView !== "chords" || state.page !== "workspace") return;
+  const timeline = $("#timeline"), width = timeline.clientWidth;
+  if (!width) return;
+  const fraction = Math.max(0, Math.min(1, (time - active.start) / (active.end - active.start)));
+  const x = active.node.offsetLeft + fraction * active.node.offsetWidth;
+  head.style.transform = `translateX(${x}px)`;
+  if ($("#followChords").checked && !$("#audioPlayer").paused &&
+      performance.now() - (state.chordTouched ?? -Infinity) > 5000) {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced || x < timeline.scrollLeft + 12 || x > timeline.scrollLeft + width - 12) {
+      timeline.scrollLeft = Math.max(0, x - width * .35);
+    }
+  }
 }
 function renderEditor() {
   const segment = chords()[state.selected];

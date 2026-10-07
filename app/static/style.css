@@ -369,3 +369,4 @@ svg.chord-chart { display: block; width: min(100%, 232px); height: auto; color: 
 .voicing-flow-option { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 12px; color: var(--muted); }
 #verificationPlayer { display: block; width: 100%; margin: 8px 0; }
 #verificationPreviewPanel small { display: block; color: var(--muted); line-height: 1.6; }
+.chord-follow-toolbar{display:flex;justify-content:flex-end;margin-bottom:8px;color:#c9ccc4;font-size:12px}.chord-follow-toolbar label{display:flex;align-items:center;gap:7px;min-height:32px;cursor:pointer}.chord-follow-toolbar input{accent-color:var(--coral);width:16px;height:16px}.timeline{position:relative;overflow-y:hidden;scroll-behavior:auto}.chord-playhead{position:absolute;left:0;top:18px;bottom:6px;width:2px;background:var(--coral);box-shadow:0 0 8px #ff765766;pointer-events:none;will-change:transform;z-index:2}
