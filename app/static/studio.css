@@ -1,6 +1,6 @@
 /* Quiet Studio. Optional visual layer; the original stylesheet stays intact. */
 html[data-theme="studio"]{--ink:#202b40;--paper:#f5f7fb;--panel:#fff;--line:#e2e7f0;--muted:#68758c;--acid:#dfe5ff;--coral:#5365dd;--blue:#c8d6ff;--soft:#eef1f7;--shadow:0 12px 32px #2634540b;scroll-behavior:auto}
-html[data-theme="studio"] body{background:var(--paper);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;line-height:1.5;letter-spacing:0}
+html[data-theme="studio"] body{background:var(--paper);font-family:"ChordLab Manrope","ChordLab Noto TC",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;line-height:1.65;letter-spacing:.01em}
 html[data-theme="studio"] button{transition:background .15s,border-color .15s,color .15s}
 html[data-theme="studio"] button:focus-visible,html[data-theme="studio"] a:focus-visible,html[data-theme="studio"] input:focus-visible,html[data-theme="studio"] select:focus-visible,html[data-theme="studio"] summary:focus-visible{outline:3px solid #5365dd55;outline-offset:3px}
 html[data-theme="studio"] .topbar{height:68px;background:#fff;border-color:var(--line);backdrop-filter:none;padding:0 28px}
@@ -125,6 +125,75 @@ html[data-theme="studio"] .player-song>span,html[data-theme="studio"] .player-ti
 html[data-theme="studio"] .seek-slider,html[data-theme="studio"] .volume-control input{accent-color:var(--coral)}
 html[data-theme="studio"] .toast{background:var(--ink);box-shadow:var(--shadow)}
 html[data-theme="studio"] .toast.error{background:#a63422}
+/* Fewer simultaneous messages, stronger type and a clear reading surface. */
+.studio-only{display:none}
+html[data-theme="classic"] details[data-studio-fold]{display:contents}
+html[data-theme="classic"] details[data-studio-fold]>summary{display:none}
+html[data-theme="studio"] .studio-only{display:block}
+html[data-theme="studio"] .studio-fold{border:0;border-top:1px solid var(--line);margin:14px 0;padding:8px 0;font-size:14px;color:var(--muted)}
+html[data-theme="studio"] .studio-fold>summary{cursor:pointer;padding:6px 0;font-weight:500;min-height:36px}
+html[data-theme="studio"] .studio-fold>p,html[data-theme="studio"] .studio-fold small{font-size:14px;line-height:1.75}
+html[data-theme="studio"] .workspace-utilities{position:relative;flex:0 0 auto;color:var(--muted);font-size:13px}
+html[data-theme="studio"] .workspace-utilities>summary{cursor:pointer;min-height:36px;padding:8px 0}
+html[data-theme="studio"] #workspaceUtilitiesBody{position:absolute;right:0;top:42px;width:min(340px,calc(100vw - 40px));padding:16px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 36px #2537581a;z-index:15}
+html[data-theme="studio"] #workspaceUtilitiesBody .practice-tools{margin-top:0}
+html[data-theme="studio"] #workspaceUtilitiesBody .downloads-panel{margin:12px 0 0}
+html[data-theme="studio"] .analysis-insight:has(#comparisonSummary.hidden){display:none}
+html[data-theme="studio"] .sheet-intro{font-size:14px;color:var(--muted);margin:8px 0 22px}
+html[data-theme="studio"] .section-heading h1{font-size:24px;font-weight:650}
+html[data-theme="studio"] .brand b{font-size:19px;font-weight:700;letter-spacing:-.4px}
+html[data-theme="studio"] .field>span,html[data-theme="studio"] .source-tabs .tab,html[data-theme="studio"] .analysis-preset select,html[data-theme="studio"] .field input{font-size:14px}
+html[data-theme="studio"] .primary,html[data-theme="studio"] .secondary,html[data-theme="studio"] .text-button,html[data-theme="studio"] .analysis-options>summary b{font-size:13px}
+html[data-theme="studio"] .jobs-panel h2{font-size:16px}
+html[data-theme="studio"] .job-title{font-size:14px;font-weight:550;line-height:1.6}
+html[data-theme="studio"] .job-item{min-height:56px;display:flex;align-items:center;padding:12px 10px}
+html[data-theme="studio"] .job-item:has(.job-state.done) .job-meta,html[data-theme="studio"] .job-state.done{display:none}
+html[data-theme="studio"] .job-item:has(.job-state:not(.done)){display:block}
+html[data-theme="studio"] .job-meta,html[data-theme="studio"] .job-state{font-size:12px}
+html[data-theme="studio"] .job-title{padding-right:0}
+html[data-theme="studio"] .job-item:has(.job-state:not(.done)) .job-title{padding-right:65px}
+html[data-theme="studio"] .workspace-head h2{font-weight:600;line-height:1.5;letter-spacing:0;font-size:clamp(25px,2.5vw,34px)}
+html[data-theme="studio"] .workspace-head{border-bottom:0;margin-bottom:16px;padding-bottom:12px}
+html[data-theme="studio"] .result-tabs{gap:30px;margin:12px 0 28px}
+html[data-theme="studio"] .result-tabs button{font-size:16px;padding:10px 2px}
+html[data-theme="studio"] .content-heading h3,html[data-theme="studio"] .panel-title h3{font-size:21px;font-weight:600}
+html[data-theme="studio"] .content-heading>span,html[data-theme="studio"] #analysisTrackLabel,html[data-theme="studio"] #tabNoteSummary,html[data-theme="studio"] #tabSource{display:none}
+html[data-theme="studio"] body:has(#playToggle:disabled) #analysisTrackLabel{display:block;font-size:13px}
+html[data-theme="studio"] .track-row{background:transparent;border:0;border-bottom:1px solid var(--line);padding:0 0 20px;margin:0 0 20px;border-radius:0}
+html[data-theme="studio"] .track-row>span{font-size:14px;font-weight:500;color:var(--ink)}
+html[data-theme="studio"] .track-switch{background:transparent;gap:6px;padding:0;flex-wrap:wrap}
+html[data-theme="studio"] .track-switch button{font-size:13px;min-height:36px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:6px 14px}
+html[data-theme="studio"] .track-switch button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+html[data-theme="studio"] .music-settings>span,html[data-theme="studio"] .music-settings label{font-size:14px;background:transparent;border:0;padding:4px 8px}
+html[data-theme="studio"] .method-options{font-size:13px}
+html[data-theme="studio"] .timeline-wrap{padding:20px;background:linear-gradient(135deg,#f0f3ff,#f8f9fd);border:0;border-radius:14px}
+html[data-theme="studio"] .chord-block{height:88px;min-width:max-content;background:#fff;border-color:#e2e7f2;border-radius:9px}
+html[data-theme="studio"] .chord-block b{font-family:"ChordLab Manrope",sans-serif;font-size:20px;font-weight:650}
+html[data-theme="studio"] .chord-block small,html[data-theme="studio"] .timeline-ruler{font-family:"ChordLab Manrope",sans-serif;font-size:11px}
+html[data-theme="studio"] .timeline-ruler{display:none}
+html[data-theme="studio"] .chord-follow-toolbar{font-size:13px}
+html[data-theme="studio"] .chord-detail,html[data-theme="studio"] .segment-editor{border:0;border-top:1px solid var(--line);border-radius:0;padding:26px 6px;background:transparent}
+html[data-theme="studio"] .full-tab-panel{border:0;padding:28px;background:#fff;box-shadow:0 4px 30px #28395505}
+html[data-theme="studio"] .tab-settings,html[data-theme="studio"] .tab-settings label,html[data-theme="studio"] .tab-options,html[data-theme="studio"] .tab-toolbar button,html[data-theme="studio"] .tab-toolbar .mini-check,html[data-theme="studio"] .tab-view-options .mini-check{font-size:14px}
+html[data-theme="studio"] .tab-toolbar{gap:10px;margin:18px 0 24px}
+html[data-theme="studio"] .tab-toolbar .primary{background:var(--coral);color:#fff}
+html[data-theme="studio"] .tab-toolbar:has(#tabEditMode:not(:checked)) :is(#tabSave:disabled,#tabUndo:disabled,#tabOriginal){display:none}
+html[data-theme="studio"] #tabSaveStatus:empty{display:none}
+html[data-theme="studio"] .tab-view-options{justify-content:flex-end;margin-bottom:12px}
+html[data-theme="studio"] .tab-flow-viewport{background:#fff;border:0;padding:0;max-height:680px}
+html[data-theme="studio"] .tab-system{border-color:#e6eaf1;border-radius:9px}
+html[data-theme="studio"] .player-song>span{display:none}
+html[data-theme="studio"] .player-song>b{font-size:13px;font-weight:600}
+html[data-theme="studio"] .library-card-meta span:nth-child(2){display:none}
+html[data-theme="studio"] .library-open h2{font-size:18px;font-weight:600}
+html[data-theme="studio"] .library-card-meta,html[data-theme="studio"] .library-card-stats{font-size:13px}
+html[data-theme="studio"] .top-nav button,html[data-theme="studio"] .top-nav a{font-size:13px}
+html[data-theme="studio"] .fine-print{font-size:12px}
+html[data-theme="studio"] .save-state,html[data-theme="studio"] .voicing-notes,html[data-theme="studio"] .tab-warnings,html[data-theme="studio"] .voicing-flow-option{font-size:14px;line-height:1.7}
+html[data-theme="studio"] #tabSource.personal{display:block;font-size:13px;color:var(--coral)}
+html[data-theme="studio"] #fullTabPanel:has(#continuousTab[aria-busy="true"]) #tabNoteSummary{display:block;font-size:14px}
+html[data-theme="studio"] .chord-diagram.empty{font-size:14px}
+html[data-theme="studio"] .player-dock .player-time,html[data-theme="studio"] .volume-control output{font-family:"ChordLab Manrope",sans-serif;font-size:12px;font-variant-numeric:tabular-nums}
 @keyframes studio-fade{from{opacity:.7}to{opacity:1}}
 @media(max-width:1100px){html[data-theme="studio"] .shell{grid-template-columns:260px minmax(0,1fr)}html[data-theme="studio"] .workspace{padding:28px 24px 40px}html[data-theme="studio"] .workspace-head{flex-wrap:wrap}html[data-theme="studio"] .workspace-head h2{font-size:24px}}
 @media(max-width:720px){
@@ -159,5 +228,17 @@ html[data-theme="studio"] .toast.error{background:#a63422}
   html[data-theme="studio"] body.has-player-dock{padding-bottom:144px}
   html[data-theme="studio"] body.has-player-dock .toast{bottom:calc(126px + env(safe-area-inset-bottom,0px))}
   html[data-theme="studio"] .empty-workspace h2{font-size:27px}
+  html[data-theme="studio"] .workspace-head h2{font-size:25px}
+  html[data-theme="studio"] .section-heading h1{font-size:23px}
+  html[data-theme="studio"] .result-tabs button{font-size:15px}
+  html[data-theme="studio"] .job-item{min-height:60px}
+  html[data-theme="studio"] .job-title{font-size:14px}
+  html[data-theme="studio"] .track-switch{display:flex;flex-wrap:wrap;overflow:visible}
+  html[data-theme="studio"] .track-switch button{font-size:13px;flex:0 0 auto}
+  html[data-theme="studio"] .timeline-wrap{padding:16px 12px}
+  html[data-theme="studio"] .full-tab-panel{padding:20px 14px}
+  html[data-theme="studio"] .panel-title h3,html[data-theme="studio"] .content-heading h3{font-size:20px}
+  html[data-theme="studio"] .tab-toolbar{gap:8px}
+  html[data-theme="studio"] .top-nav button,html[data-theme="studio"] .top-nav a{font-size:13px}
 }
 @media(prefers-reduced-motion:reduce){html[data-theme="studio"] button,html[data-theme="studio"] [data-result-panel]:not(.result-hidden){animation:none!important;transition:none}}

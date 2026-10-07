@@ -587,6 +587,8 @@ const TabStudio = (() => {
       : state.current.pure_guitar || state.current.result.guitar_tab?.source === "original"
       ? "純吉他"
       : "吉他分離軌";
+    $("#tabSource").classList.toggle("personal", !!loadedDocument);
+    $("#tabTitle").title = $("#tabSource").textContent;
     const warning = [];
     const verified = state.tabVerification, summary = $("#verificationSummary");
     summary.classList.toggle("hidden", isBass() || !["verified", "cross_verified", "event_verified"].includes(state.tabEngine) || !verified);

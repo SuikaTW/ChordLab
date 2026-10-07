@@ -101,6 +101,8 @@ async function init() {
 }
 
 function bindEvents() {
+  $("#tabAnalysisDetails").prepend($("#tabEngineOption"));
+  $("#tabAnalysisDetails").append($("#tabDisclaimer"));
   LocalChordReview.bind();
   TabStudio.bind();
   $("#analysisPreset").addEventListener("change", applyAnalysisPreset);
@@ -111,6 +113,7 @@ function bindEvents() {
   methodSummary.textContent = "辨識方式";
   methodDetails.append(methodSummary, $(".method-switch"));
   $(".method-row").append(methodDetails);
+  $(".method-row").append($("#workspaceUtilities"));
   $("#lyricsList").addEventListener("wheel", () => state.lyricTouched = performance.now(), { passive: true });
   $("#lyricsList").addEventListener("touchstart", () => state.lyricTouched = performance.now(), {
     passive: true,
@@ -447,9 +450,10 @@ function renderJobs() {
         state.jobsExpanded ? "收起" : "顯示其他 " + (state.jobs.length - 8) + " 首"
       }</button>`
       : "");
-  $$("[data-job]").forEach((button) =>
-    button.addEventListener("click", () => openJob(button.dataset.job, false, true))
-  );
+  $$("[data-job]").forEach((button) => {
+    button.title = [".job-title", ".job-meta", ".job-state"].map(selector => button.querySelector(selector)?.textContent || "").join("\n");
+    button.addEventListener("click", () => openJob(button.dataset.job, false, true));
+  });
   $("#jobsMore")?.addEventListener("click", () => {
     state.jobsExpanded = !state.jobsExpanded;
     renderJobs();

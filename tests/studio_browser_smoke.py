@@ -34,6 +34,12 @@ def run():
             page.wait_for_function('() => state.current && state.jobs.length')
             page.evaluate('(id) => openJob(id)', JOB)
             page.wait_for_function('() => state.current?.id === "' + JOB + '" && state.chordEntries?.length')
+            fonts = page.evaluate('''async () => {
+                const latin = await document.fonts.load('500 16px "ChordLab Manrope"', 'ChordLab');
+                const chinese = await document.fonts.load('500 16px "ChordLab Noto TC"', '歌曲分析與吉他');
+                return latin.length > 0 && chinese.length > 0 && [...latin, ...chinese].every(font => font.status === 'loaded');
+            }''')
+            assert fonts, 'Both self-hosted font families must really load'
             # Exercise the actual media control before replacing the clock.
             page.wait_for_function('() => $("#audioPlayer").readyState >= 1')
             page.locator('#playToggle').click()
@@ -59,10 +65,34 @@ def run():
             for theme in ('studio', 'classic'):
                 page.select_option('#themeSelect', theme)
                 assert page.evaluate('document.documentElement.dataset.theme') == theme
+                if theme == 'studio':
+                    page.locator('#workspaceUtilities > summary').click()
+                    assert page.locator('#practiceTools > summary').is_visible()
+                    page.locator('#practiceTools > summary').click()
+                    assert page.locator('#playbackSpeed').is_visible()
+                    page.locator('#practiceTools > summary').click()
+                    page.keyboard.press('Escape')
+                    assert not page.locator('#workspaceUtilities').evaluate('e => e.open')
+                else:
+                    assert page.evaluate('$("#practiceSlot").nextElementSibling.id === "practiceTools"')
+                    assert page.evaluate('$("#downloadsSlot").nextElementSibling.id === "stemDownloadsPanel"')
                 for view in ('chords', 'tab'):
                     page.locator(f'[data-result-view="{view}"]').click()
+                    if view == 'chords' and theme == 'studio':
+                        assert page.evaluate('$$ (".chord-block").every(button => button.scrollWidth <= button.clientWidth + 1)'), 'Larger chord names must not be clipped'
                     if view == 'tab':
                         page.wait_for_function('() => $("#continuousTab .tab-system") && !$("#fullTabPanel").classList.contains("result-hidden")')
+                        if theme == 'studio':
+                            assert not page.locator('#tabAnalysisDetails').evaluate('e => e.open')
+                            assert page.locator('#tabSave').is_hidden()
+                            assert page.locator('#tabWarnings').is_visible() or page.locator('#tabWarnings').evaluate('e => e.classList.contains("hidden")')
+                            page.locator('#tabAnalysisDetails > summary').click()
+                            assert page.locator('#tabEngineOption > summary').is_visible()
+                            page.locator('#tabAnalysisDetails > summary').click()
+                        else:
+                            assert page.locator('#tabAnalysisDetails').evaluate('e => e.open')
+                    if args.screenshots and width in (1440, 390):
+                        page.screenshot(path=str(args.screenshots / f'{theme}-{width}-{view}-overview.png'))
                     page.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
                     page.wait_for_timeout(300)
                     result = page.evaluate('''() => {
