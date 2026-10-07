@@ -3,6 +3,18 @@ import "../app/static/chord-voicings.js";
 const { positions, diagram, caption } = globalThis.ChordLabVoicings;
 const tuning = [40,45,50,55,59,64];
 function assert(value, message) { if (!value) throw new Error(message); }
+Deno.test("connected voicings reduce position jumps and handle rests without changing notes", () => {
+  const labels = ["C", "F", "G", "C", "N", "Am", "D", "G"];
+  const connected = ChordLabVoicings.connect(labels);
+  assert(connected.length === labels.length && connected[4] === 0, "rests split phrases");
+  const travel = (choices) => labels.slice(1).reduce((sum,label,index) => {
+    const before = positions(labels[index])[choices[index]], after = positions(label)[choices[index+1]];
+    return sum + (before && after ? Math.abs(before.low-after.low) : 0);
+  },0);
+  assert(travel(connected) <= travel(labels.map(() => 0)), "no greater position travel on common progression");
+  for (const [index,label] of labels.entries()) if (label !== "N") assert(!!positions(label)[connected[index]], "valid choice");
+  assert(ChordLabVoicings.connect([]).length === 0, "empty phrase");
+});
 Deno.test("familiar open and barre shapes are first, with distinct alternate positions", () => {
   const shapes = { C: [-1,3,2,0,1,0], Am: [-1,0,2,2,1,0], G: [3,2,0,0,0,3],
     D: [-1,-1,0,2,3,2], F: [1,3,3,2,1,1], Bm: [-1,2,4,4,3,2], "C/E": [0,3,2,0,1,0] };

@@ -262,6 +262,10 @@ def init_db() -> None:
             job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
             viewer TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL,
             updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, viewer))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS tab_references (
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE, viewer TEXT NOT NULL,
+            instrument TEXT NOT NULL, revision INTEGER NOT NULL, document TEXT NOT NULL,
+            updated_at INTEGER NOT NULL, PRIMARY KEY(job_id,viewer,instrument))""")
         connection.execute("""CREATE TABLE IF NOT EXISTS guitar_tasks (
             job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
             status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1,
@@ -1104,14 +1108,19 @@ def get_personal_tab(request: Request, job_id: str, instrument: Literal["guitar"
     with db() as connection:
         row = connection.execute(f"SELECT document,revision FROM {table} WHERE job_id=? AND viewer=?",
                                  (job_id, identity_key(request.state.identity))).fetchone()
-    return {"document": json.loads(row["document"]) if row else None, "revision": row["revision"] if row else 0}
+        reference = connection.execute("SELECT 1 FROM tab_references WHERE job_id=? AND viewer=? AND instrument=?",
+            (job_id,identity_key(request.state.identity),instrument)).fetchone()
+    return {"document": json.loads(row["document"]) if row else None, "revision": row["revision"] if row else 0,
+            "reference_confirmed": bool(reference)}
 
 
 @app.put("/api/jobs/{job_id}/tab")
-def save_personal_tab(request: Request, job_id: str, document: TabDocument, instrument: Literal["guitar", "bass"] = "guitar") -> dict:
+def save_personal_tab(request: Request, job_id: str, document: TabDocument, instrument: Literal["guitar", "bass"] = "guitar", confirmed_reference: bool = False) -> dict:
     job = accessible_job(request, job_id)
     if document.instrument != instrument:
         raise HTTPException(400, "樂器與儲存目標不一致")
+    if confirmed_reference and not any(note.edited for note in document.notes):
+        raise HTTPException(400, "私人校驗資料需包含已核對的手動修正")
     table = "user_bass_tabs" if instrument == "bass" else "user_tabs"
     if job["status"] != "done":
         raise HTTPException(409, "請等分析完成")
@@ -1133,7 +1142,38 @@ def save_personal_tab(request: Request, job_id: str, document: TabDocument, inst
             ON CONFLICT(job_id,viewer) DO UPDATE SET revision=excluded.revision,
             document=excluded.document,updated_at=excluded.updated_at""",
                            (job_id, key, revision + 1, json.dumps(payload), int(time.time())))
-    return {"document": payload, "revision": revision + 1}
+        # A reference is a separately confirmed snapshot, never an automatic label.
+        if confirmed_reference:
+            connection.execute("""INSERT INTO tab_references(job_id,viewer,instrument,revision,document,updated_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(job_id,viewer,instrument) DO UPDATE SET
+                revision=excluded.revision,document=excluded.document,updated_at=excluded.updated_at""",
+                (job_id,key,instrument,revision+1,json.dumps(payload),int(time.time())))
+        else:
+            # Subsequent unconfirmed saves revoke the earlier training snapshot.
+            connection.execute("DELETE FROM tab_references WHERE job_id=? AND viewer=? AND instrument=?", (job_id,key,instrument))
+    return {"document": payload, "revision": revision + 1, "reference_confirmed": confirmed_reference}
+
+
+@app.get("/api/jobs/{job_id}/tab-reference")
+def get_tab_reference(request: Request, job_id: str, instrument: Literal["guitar", "bass"] = "guitar"):
+    accessible_job(request, job_id)
+    with db() as connection:
+        row = connection.execute("SELECT document,revision FROM tab_references WHERE job_id=? AND viewer=? AND instrument=?",
+            (job_id,identity_key(request.state.identity),instrument)).fetchone()
+    if not row:
+        raise HTTPException(404, "尚無已確認的私人校驗資料")
+    return JSONResponse({"notes": json.loads(row["document"])["notes"], "revision": row["revision"], "instrument": instrument,
+                         "kind": "user_confirmed_not_independently_verified"},
+                        headers={"Content-Disposition": f'attachment; filename="reference-{instrument}.json"'})
+
+
+@app.delete("/api/jobs/{job_id}/tab-reference")
+def revoke_tab_reference(request: Request, job_id: str, instrument: Literal["guitar", "bass"] = "guitar"):
+    accessible_job(request,job_id)
+    with db() as connection:
+        connection.execute("DELETE FROM tab_references WHERE job_id=? AND viewer=? AND instrument=?",
+            (job_id,identity_key(request.state.identity),instrument))
+    return {"ok": True}
 
 
 def guitar_uses_original(row: sqlite3.Row, result: dict) -> bool:
@@ -1238,6 +1278,12 @@ def get_guitar_engine_midi(request: Request, job_id: str, engine: str):
                         filename=f"{safe_title(row['title'])}-{engine}.mid")
 
 
+@app.get("/api/jobs/{job_id}/verification-preview")
+def verification_preview(request: Request, job_id: str):
+    accessible_job(request, job_id)
+    return FileResponse(job_file(job_id,"stem-midi/guitar-verified.preview.wav"), media_type="audio/wav")
+
+
 @app.post("/api/jobs/{job_id}/guitar-analysis", status_code=202)
 def start_guitar_task(request: Request, job_id: str, engine: str = "basic_pitch") -> dict:
     row = editable_job(request, job_id)
@@ -1254,6 +1300,8 @@ def start_guitar_task(request: Request, job_id: str, engine: str = "basic_pitch"
     if (engine == "basic_pitch" and "guitar" in separation.get("midi_stems", [])) or notes_path.is_file() and midi_path.is_file():
         return {"status": "done"}
     job_file(job_id, "audio.wav" if original else "stems/guitar.wav")
+    if engine == "verified" and not any(guitar_paths(JOBS / job_id, name)[0].is_file() for name in ("hybrid","gaps","basic_pitch","tabcnn")):
+        raise HTTPException(400, "請先產生一個吉他音符版本，再進行音訊校驗")
     return enqueue_refinement_task(request, row, engine)
 
 
@@ -1638,8 +1686,9 @@ def sandbox_command(command: list[str], allow_network: bool) -> list[str]:
     if STORAGE_MOUNT and STORAGE_MOUNT.is_dir():
         arguments.extend(("--tmpfs", str(STORAGE_MOUNT)))
     mounted_jobs: set[Path] = set()
+    readonly_jobs: set[Path] = set()
     jobs_root = JOBS.resolve()
-    for item in command:
+    for index, item in enumerate(command):
         if not item.startswith("/"):
             continue
         candidate = Path(item).resolve(strict=False)
@@ -1649,10 +1698,17 @@ def sandbox_command(command: list[str], allow_network: bool) -> list[str]:
             continue
         if not relative.parts:
             continue
-        mounted_jobs.add(jobs_root / relative.parts[0])
+        target = jobs_root / relative.parts[0]
+        if index and command[index-1] == "--reference-audio":
+            readonly_jobs.add(target)
+        else:
+            mounted_jobs.add(target)
     for job_dir in sorted(mounted_jobs):
         if job_dir.is_dir():
             arguments.extend(("--bind", str(job_dir), str(job_dir)))
+    for job_dir in sorted(readonly_jobs - mounted_jobs):
+        if job_dir.is_dir():
+            arguments.extend(("--ro-bind", str(job_dir), str(job_dir)))
     arguments.extend(("--chdir", str(ROOT), "--", *command))
     return arguments
 
@@ -1894,12 +1950,39 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
         if engine != "basic_pitch":
             notes_path, midi_path = guitar_paths(directory, engine)
             temporary_notes, temporary_midi = notes_path.with_suffix(".json.tmp"), midi_path.with_suffix(".mid.tmp")
-            run_command([str(GUITAR_PYTHON), str(ROOT / "tools/guitar_worker.py"), str(source),
-                         str(temporary_notes), str(temporary_midi), "--engine", engine,
-                         *(["--gaps-cache", str(guitar_paths(directory, "gaps")[0])] if engine == "hybrid" and guitar_paths(directory, "gaps")[0].is_file() else [])], timeout=1800)
+            if engine == "verified":
+                base = next((guitar_paths(directory, name)[0] for name in ("hybrid","gaps","basic_pitch","tabcnn") if guitar_paths(directory,name)[0].is_file()), None)
+                if base is None:
+                    raise ValueError("Verification needs an existing note version")
+                references = []
+                with db() as connection:
+                    owner = connection.execute("SELECT owner FROM jobs WHERE id=?", (job_id,)).fetchone()
+                    rows = connection.execute("""SELECT r.job_id,r.document,j.result,j.pure_guitar FROM tab_references r
+                        JOIN users u ON u.id=r.viewer JOIN jobs j ON j.id=r.job_id
+                        WHERE u.subject=? AND r.instrument='guitar' AND j.status='done'
+                        AND (j.owner=? OR j.is_public=1) ORDER BY r.updated_at DESC LIMIT 8""", (owner["owner"], owner["owner"])).fetchall() if owner else []
+                for row in rows:
+                    audio = JOBS / row["job_id"] / ("audio.wav" if guitar_uses_original(row,json.loads(row["result"] or "{}")) else "stems/guitar.wav")
+                    if audio.is_file():
+                        references.append({"audio": str(audio), "notes": json.loads(row["document"])["notes"]})
+                reference_path = output_dir / "verification-references.private.json"
+                preview_path = output_dir / "guitar-verified.preview.wav.tmp"
+                try:
+                    reference_path.write_text(json.dumps(references), encoding="utf-8")
+                    run_command([str(GUITAR_PYTHON), str(ROOT / "tools/audio_verification_worker.py"), str(source),
+                        str(temporary_notes), str(temporary_midi), "--notes-cache", str(base), "--references", str(reference_path), "--preview", str(preview_path),
+                        *[argument for reference in references for argument in ("--reference-audio",reference["audio"])]], timeout=1800)
+                finally:
+                    reference_path.unlink(missing_ok=True)
+            else:
+                run_command([str(GUITAR_PYTHON), str(ROOT / "tools/guitar_worker.py"), str(source),
+                             str(temporary_notes), str(temporary_midi), "--engine", engine,
+                             *(["--gaps-cache", str(guitar_paths(directory, "gaps")[0])] if engine == "hybrid" and guitar_paths(directory, "gaps")[0].is_file() else [])], timeout=1800)
             payload = json.loads(temporary_notes.read_text(encoding="utf-8"))
             if payload.get("profile") != GUITAR_ENGINES[engine]["profile"] or not isinstance(payload.get("notes"), list):
                 raise ValueError("Invalid guitar experiment output")
+            if engine == "verified":
+                preview_path.replace(output_dir / "guitar-verified.preview.wav")
             temporary_midi.replace(midi_path)
             temporary_notes.replace(notes_path)
             return ["guitar"], {}

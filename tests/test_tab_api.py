@@ -75,6 +75,26 @@ class TabApiTests(unittest.TestCase):
         self.assertIsNone(self.client.get("/api/jobs/song/tab?instrument=bass").json()["document"])
         self.assertEqual(self.put_bass(self.bass_document()).status_code, 200)
 
+    def test_private_reference_requires_confirmation_and_is_not_shared(self):
+        headers = {"Origin":"http://testserver"}
+        url = "/api/jobs/song/tab?confirmed_reference=true"
+        self.assertEqual(self.client.put(url,json=self.document,headers=headers).status_code,400)
+        document = {**self.document,"notes":[{**self.document["notes"][0],"edited":True}]}
+        saved = self.client.put(url,json=document,headers=headers)
+        self.assertTrue(saved.json()["reference_confirmed"])
+        self.assertEqual(self.client.get("/api/jobs/song/tab-reference").json()["notes"][0]["midi"],64)
+        self.login("bob@example.com")
+        self.assertEqual(self.client.get("/api/jobs/song/tab-reference").status_code,404)
+        self.client.delete("/api/jobs/song/tab-reference",headers=headers)
+        self.login("alice@example.com")
+        self.assertEqual(self.client.get("/api/jobs/song/tab-reference").status_code,200)
+        self.assertEqual(self.put({**document,"revision":1}).status_code,200)
+        self.assertEqual(self.client.get("/api/jobs/song/tab-reference").status_code,404)
+        self.assertEqual(self.client.put(url,json={**document,"revision":2},headers=headers).status_code,200)
+        self.assertEqual(self.client.delete("/api/jobs/song/tab-reference",headers=headers).status_code,200)
+        self.assertFalse(self.client.get("/api/jobs/song/tab").json()["reference_confirmed"])
+        self.assertEqual(self.client.get("/api/jobs/song/tab").json()["revision"],3)
+
     def test_bass_validation_rejects_guitar_settings_and_nonexistent_strings(self):
         bass = self.bass_document()
         for wrong in [{"capo": 2}, {"source_engine": "hybrid"}, {"tuning": "standard"}]:

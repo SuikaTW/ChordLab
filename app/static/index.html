@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f5f3ed">
   <title>ChordLab</title>
   <link rel="icon" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=21">
+  <link rel="stylesheet" href="/static/style.css?v=22">
 </head>
 <body>
   <header class="topbar">
@@ -77,6 +77,7 @@
             <label class="volume-control"><span aria-hidden="true">🔊</span><input id="volumeSlider" type="range" min="0" max="1" value="1" step="0.01" aria-label="播放器音量"><output id="volumeValue">100%</output></label>
           </div>
           <audio id="audioPlayer" class="audio-engine" preload="metadata" playsinline></audio>
+          <details id="practiceTools" class="practice-tools"><summary>練習工具</summary><div class="practice-controls"><label>速度 <select id="playbackSpeed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option></select></label><button id="loopA" type="button">設定 A</button><button id="loopB" type="button">設定 B</button><button id="loopToggle" type="button" aria-pressed="false" disabled>循環播放</button><button id="loopClear" type="button">清除</button><span id="loopRange" role="status"></span></div></details>
           <div id="trackRow" class="track-row hidden"><span>混音音軌</span><div id="trackSwitch" class="track-switch"></div><label id="weakTrackOption" class="hidden"><input id="showWeakTracks" type="checkbox"> 顯示弱音軌 <small id="weakTrackCount"></small></label><small id="analysisTrackLabel"></small></div>
           <div class="method-row"><div class="method-switch"><button data-method="ensemble" class="hidden" title="保留原本和弦，標記 BTC 的不同判斷">雙引擎比對</button><button data-method="chordino" class="active" title="較適合完整歌曲的和弦辨識">原本辨識</button><button data-method="basic_pitch" title="從音符推算和弦">音符推算</button></div><div class="music-settings"><span id="keyStat">Key —</span><label>Capo <select id="capoSelect"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select></label><span id="playKeyStat">Play key —</span></div><div class="stats" aria-hidden="true"><span id="durationStat">—</span><span id="notesStat">—</span></div></div>
           <details id="stemDownloadsPanel" class="downloads-panel hidden"><summary><span>分軌與 MIDI 下載</span><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></summary><div id="stemDownloads" class="stem-downloads"></div></details>
@@ -95,7 +96,8 @@
 
             <div class="detail-grid">
               <section class="chord-detail">
-                <div class="panel-title"><div><p class="eyebrow">GUITAR VOICING</p><h3 id="selectedChord">選擇一個和弦</h3></div><button id="playChord" class="icon-button" title="播放和弦" aria-label="播放和弦"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>
+                <div class="panel-title"><div><p class="eyebrow">GUITAR VOICING</p><h3 id="selectedChord">選擇一個和弦</h3></div><button id="loopChord" type="button" class="text-button">循環這段</button></div>
+                <label class="voicing-flow-option"><input id="smoothVoicings" type="checkbox">依前後和弦推薦順手把位</label>
                 <div id="voicingPositions" class="voicing-positions hidden" role="group" aria-label="選擇和弦把位"></div>
                 <div id="fretboard" class="chord-diagram empty"><span>點選和弦，查看按法與不同把位。</span></div>
                 <p id="voicingNotes" class="voicing-notes"></p>
@@ -115,14 +117,17 @@
 
           <section id="fullTabPanel" class="full-tab-panel result-hidden hidden" data-result-panel="tab">
             <div class="panel-title"><div><h3 id="tabTitle">吉他六線譜</h3></div><span id="tabSource" class="save-state"></span></div>
-            <div class="tab-settings"><label>樂器 <select id="tabInstrument"><option value="guitar">吉他</option><option value="bass">Bass</option></select></label><label id="tabEngineOption">辨識 <select id="tabEngine"><option value="basic_pitch">原版</option><option value="gaps">GAPS 音符（實驗）</option><option value="tabcnn">TabCNN 弦位（實驗）</option><option value="hybrid">整合 TAB v2（實驗）</option></select></label><a id="tabEngineMidi" class="text-button hidden">下載此版本 MIDI</a></div>
+            <div class="tab-settings"><label>樂器 <select id="tabInstrument"><option value="guitar">吉他</option><option value="bass">Bass</option></select></label><label id="tabEngineOption">辨識 <select id="tabEngine"><option value="basic_pitch">原版</option><option value="gaps">GAPS 音符（實驗）</option><option value="tabcnn">TabCNN 弦位（實驗）</option><option value="hybrid">整合 TAB v2（實驗）</option><option value="verified">音訊校驗（實驗）</option></select></label><a id="tabEngineMidi" class="text-button hidden">下載此版本 MIDI</a></div>
             <div class="tab-toolbar"><button id="guitarPreview" type="button" class="secondary">試聽吉他</button><button id="generateGuitarTab" type="button" class="primary compact hidden">產生 TAB</button><label class="mini-check"><input id="tabEditMode" type="checkbox">編輯</label><button id="tabSave" type="button" class="secondary" disabled>儲存我的版本</button><button id="tabUndo" type="button" class="text-button" disabled>復原</button><button id="tabOriginal" type="button" class="text-button">原始譜</button><span id="tabSaveStatus" role="status"></span></div>
             <div id="guitarPreviewPanel" class="guitar-preview hidden"><audio id="guitarPreviewPlayer" controls preload="none" playsinline></audio><small>20 秒吉他片段</small></div>
             <p id="tabWarnings" class="tab-warnings hidden" role="status"></p>
+            <p id="verificationSummary" class="voicing-notes hidden" role="status"></p>
+            <details id="verificationPreviewPanel" class="practice-tools hidden"><summary>試聽校驗音符</summary><button id="playVerification" class="text-button" type="button">從目前位置試聽</button><audio id="verificationPlayer" controls preload="none" playsinline></audio><small>合成音色僅供對照音高與時間，不代表原曲音色或指法。</small></details>
             <details class="tab-options"><summary>調弦與譜面設定</summary>
               <div class="tab-settings"><label>調弦 <select id="tabTuning"><option value="standard">標準 E A D G B e</option><option value="drop_d">Drop D</option><option value="dadgad">DADGAD</option><option value="half_down">降半音</option><option value="whole_down">降全音</option></select></label><div class="tab-density" aria-label="TAB 顯示密度"><button class="active" data-tab-density="clean">簡潔</button><button data-tab-density="full">完整</button></div></div>
               <div class="tab-settings"><label>聲部 <select id="tabVoice"><option value="all">全部</option><option value="high">同時起音取最高音</option><option value="low">同時起音取最低音</option></select></label><label>把位 <select id="tabPosition"><option value="auto">自動</option><option value="open">0–4 格</option><option value="middle">5–9 格</option><option value="high">9–14 格</option></select></label></div>
               <div id="tabFingeringOptions" class="tab-settings hidden"><label>指法 <select id="tabFingering"><option value="model">參考模型弦位</option><option value="playable">重新配置易彈把位</option></select></label><small>模型弦位僅適用標準調弦、Capo 0；只是線索，不保證原演奏弦位。</small></div>
+              <label class="mini-check"><input id="confirmReference" type="checkbox">已核對的手動修正，儲存時加入私人校驗資料</label><a id="referenceExport" class="text-button hidden">下載我的校驗資料</a><button id="revokeReference" type="button" class="text-button hidden">撤回校驗資料</button>
               <div class="tab-settings"><label>BPM <input id="tabBpm" type="number" min="30" max="300" step="0.1" value="120"></label><label>每小節拍數 <select id="tabMeter"><option value="4">4</option><option value="3">3</option><option value="6">6</option></select></label><label>第一拍（秒）<input id="tabOffset" type="number" min="0" max="1200" step="0.01" value="0"></label><button id="tabAutoRhythm" type="button" class="text-button">自動拍點</button></div>
               <small>拍點與小節起點為估計，可調 BPM 和第一拍。聲部篩選不會真正分開兩把吉他。</small>
             </details>
@@ -149,9 +154,10 @@
   <dialog id="tabNoteDialog"><form id="tabNoteForm"><h3>修正音符</h3><p id="tabEditInfo"></p><div class="time-fields"><label>弦<select id="tabEditString"><option value="5">第 1 弦</option><option value="4">第 2 弦</option><option value="3">第 3 弦</option><option value="2">第 4 弦</option><option value="1">第 5 弦</option><option value="0">第 6 弦</option></select></label><label>格數<input id="tabEditFret" type="number" min="0" max="24" step="1" required></label></div><p id="tabEditPitch"></p><div class="editor-actions"><button id="tabDeleteNote" type="button" class="danger-text">刪除</button><button id="tabCloseDialog" type="button" class="text-button">取消</button><button type="submit" class="secondary">套用</button></div></form></dialog>
   <script src="/static/tab-engine.js?v=7" defer></script>
   <script src="/static/tab-layout.js?v=2" defer></script>
-  <script src="/static/tab-studio.js?v=8" defer></script>
+  <script src="/static/tab-studio.js?v=9" defer></script>
   <script src="/static/chord-theory.js?v=1" defer></script>
-  <script src="/static/chord-voicings.js?v=1" defer></script>
-  <script src="/static/app.js?v=35" defer></script>
+  <script src="/static/chord-voicings.js?v=2" defer></script>
+  <script src="/static/practice.js?v=1" defer></script>
+  <script src="/static/app.js?v=36" defer></script>
 </body>
 </html>

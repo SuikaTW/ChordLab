@@ -119,5 +119,38 @@
     const description = shape.map((fret,i) => `${6-i} 弦${fret < 0 ? "不彈" : fret === 0 ? "空弦" : `第 ${fret} 格`}`).join("，");
     return `<svg class="chord-chart" viewBox="0 0 232 268" role="img" aria-label="${description}"><title>${description}</title>${parts.join("")}</svg>`;
   }
-  scope.ChordLabVoicings = { positions, caption, diagram };
+  function connect(labels) {
+    if (labels.length > 512) throw new Error("Voicing phrase too long");
+    const options = labels.map(positions), result = Array(labels.length).fill(0);
+    let costs = [], paths = [];
+    for (let index = 0; index <= options.length; index++) {
+      const next = options[index] || [];
+      if (!next.length) {
+        if (costs.length) {
+          const best = costs.indexOf(Math.min(...costs));
+          for (const [at, choice] of paths[best]) result[at] = choice;
+        }
+        costs = []; paths = []; continue;
+      }
+      const nextCosts = [], nextPaths = [];
+      for (const [choice, shape] of next.entries()) {
+        let best = .1 * choice, previous = [];
+        if (costs.length) {
+          let minimum = Infinity;
+          for (const [oldChoice, old] of options[index-1].entries()) {
+            const shift = Math.abs(shape.low-old.low);
+            const strings = shape.shape.reduce((total, fret, string) => total +
+              (fret >= 0 && old.shape[string] >= 0 ? Math.abs(fret-old.shape[string]) : .5), 0) / 6;
+            const cost = costs[oldChoice] + shift * 1.2 + strings * .35 + .1 * choice;
+            if (cost < minimum) { minimum = cost; previous = paths[oldChoice]; }
+          }
+          best = minimum;
+        }
+        nextCosts.push(best); nextPaths.push([...previous, [index, choice]]);
+      }
+      costs = nextCosts; paths = nextPaths;
+    }
+    return result;
+  }
+  scope.ChordLabVoicings = { positions, caption, diagram, connect };
 })(globalThis);

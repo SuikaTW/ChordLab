@@ -6,6 +6,7 @@ ENGINES = {
     "gaps": {"label": "GAPS 音符辨識（實驗）", "profile": "guitar_gaps_v1", "file": "guitar-gaps", "model": "guitar-gaps-paper.pth"},
     "tabcnn": {"label": "TabCNN 弦位辨識（實驗）", "profile": "guitar_tabcnn_gpfx_v1", "file": "guitar-tabcnn", "model": "tabcnn-gpfx.onnx"},
     "hybrid": {"label": "整合 TAB v2（實驗）", "profile": "guitar_hybrid_v2", "file": "guitar-hybrid"},
+    "verified": {"label": "音訊校驗（實驗）", "profile": "guitar_verified_v1", "file": "guitar-verified"},
 }
 
 
@@ -15,6 +16,8 @@ def paths(directory: Path, engine: str) -> tuple[Path, Path]:
 
 
 def available(root: Path, engine: str) -> bool:
+    if engine == "verified":
+        return (root / ".venv-guitar/bin/python").is_file()
     if engine == "hybrid":
         return available(root, "gaps") and available(root, "tabcnn")
     if engine == "basic_pitch":

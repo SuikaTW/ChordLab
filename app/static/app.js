@@ -256,7 +256,11 @@ function bindEvents() {
       }
     })
   );
-  $("#playChord").remove();
+  Practice.bind();
+  $("#smoothVoicings").addEventListener("change", () => {
+    currentVoicingLabel = null;
+    if (state.selected >= 0) renderVoicing(playedChord(chords()[state.selected]?.chord), chords()[state.selected]?.chord);
+  });
   $("#visibilityToggle").addEventListener("click", toggleVisibility);
 }
 
@@ -324,6 +328,7 @@ function applyAnalysisPreset() {
   updateSeparationOptions();
 }
 function paintPlayback() {
+  Practice.tick();
   if (document.hidden) return;
   updatePlayerControls();
   if (state.page !== "workspace") return;
@@ -812,6 +817,7 @@ function seekPlayback(event) {
   updatePlayerControls();
 }
 function clearMixer() {
+  Practice.reset();
   const player = $("#audioPlayer");
   clearTimeout(state.mixTimer);
   state.mixTimer = null;
@@ -971,6 +977,7 @@ async function loadContinuousTab() {
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
     state.tabNotes = payload?.notes || [];
     state.tabProfile = payload?.profile || "general";
+    state.tabVerification = engine === "verified" ? payload?.refinement : null;
     state.tabSource = payload ? instrument : "unavailable";
   } catch (error) {
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
@@ -1289,6 +1296,11 @@ function renderVoicing(label, original = label) {
   if (currentVoicingLabel !== label) {
     currentVoicingLabel = label;
     currentVoicingIndex = 0;
+    if ($("#smoothVoicings").checked && state.selected >= 0) {
+      const start = Math.max(0, state.selected - 4), end = Math.min(chords().length, state.selected + 5);
+      const path = ChordLabVoicings.connect(chords().slice(start, end).map(segment => playedChord(segment.chord)));
+      currentVoicingIndex = path[state.selected - start] ?? 0;
+    }
   }
   positions.replaceChildren();
   positions.classList.add("hidden");

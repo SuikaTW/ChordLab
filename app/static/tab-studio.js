@@ -21,7 +21,7 @@ const TabStudio = (() => {
     rhythm = {},
     windowStart = -1,
     activeRow = -1;
-  let scrollFrame = 0, taskTimer = null, manualScrollAt = 0, session = 0, editSerial = 0;
+  let scrollFrame = 0, taskTimer = null, manualScrollAt = 0, session = 0, editSerial = 0, verificationSerial = 0;
   const copy = (list) => list.map((note) => ({ ...note }));
   const context = () => ({
     instrument: instrument(),
@@ -36,6 +36,48 @@ const TabStudio = (() => {
   const key = () => JSON.stringify(context());
 
   function bind() {
+    $("#revokeReference").addEventListener("click", async () => {
+      const id = jobId, expected = session;
+      try {
+        await api(`/api/jobs/${id}/tab-reference?instrument=${instrument()}`,{method:"DELETE"});
+        if (jobId !== id || session !== expected) return;
+        $("#confirmReference").checked = false;
+        $("#referenceExport").classList.add("hidden");
+        $("#revokeReference").classList.add("hidden");
+        toast("已撤回校驗資料；你的譜面保留");
+      } catch (error) {
+        if (jobId === id && session === expected) toast(error.message,true);
+      }
+    });
+    $("#playVerification").addEventListener("click", async () => {
+      if (!jobId || isBass() || state.tabEngine !== "verified") return;
+      const id = jobId, player = $("#verificationPlayer"), main = $("#audioPlayer");
+      const request = ++verificationSerial;
+      const time = main.currentTime;
+      main.pause();
+      state.resumeOnLoad = state.resumeAfterMix = false;
+      $("#guitarPreviewPlayer").pause();
+      player.pause();
+      player.src = `/api/jobs/${id}/verification-preview`;
+      player.volume = state.volume;
+      player.defaultPlaybackRate = player.playbackRate = Number($("#playbackSpeed").value);
+      player.preservesPitch = player.webkitPreservesPitch = true;
+      player.addEventListener("loadedmetadata", () => {
+        if (jobId !== id || state.tabEngine !== "verified" || request !== verificationSerial) return;
+        player.currentTime = Math.min(time, player.duration || time);
+        player.play().catch(() => toast("請按合成預覽的播放鍵"));
+      }, { once: true });
+      player.addEventListener("error", () => {
+        if (jobId === id && request === verificationSerial) toast("合成預覽載入失敗，請稍後重試", true);
+      }, { once: true });
+      player.load();
+    });
+    $("#audioPlayer").addEventListener("play", () => $("#verificationPlayer").pause());
+    $("#verificationPlayer").addEventListener("play", () => {
+      $("#audioPlayer").pause(); $("#guitarPreviewPlayer").pause();
+      state.resumeOnLoad = state.resumeAfterMix = false;
+    });
+    $("#guitarPreviewPlayer").addEventListener("play", () => $("#verificationPlayer").pause());
     $("#tabInstrument").addEventListener("change", async () => {
       const previous = instrument();
       if (!canLeave()) {
@@ -181,6 +223,9 @@ const TabStudio = (() => {
     return !dirty || confirm("尚有未儲存的 TAB 修正，確定離開？");
   }
   function configure(id) {
+    $("#confirmReference").checked = false;
+    $("#referenceExport").classList.add("hidden");
+    $("#revokeReference").classList.add("hidden");
     $("#tabInstrument").value = instrument();
     $("#tabEngineOption").classList.toggle("hidden", isBass());
     const select = $("#tabTuning");
@@ -264,6 +309,13 @@ const TabStudio = (() => {
     $("#continuousTab").replaceChildren();
     $("#tabFlowViewport").scrollTop = 0;
     $("#tabWarnings").classList.add("hidden");
+    $("#verificationSummary").classList.add("hidden");
+    $("#verificationPreviewPanel").classList.add("hidden");
+    verificationSerial++;
+    $("#verificationPlayer").pause();
+    $("#verificationPlayer").removeAttribute("src");
+    $("#verificationPlayer").load();
+    state.tabVerification = null;
     $("#tabNoteSummary").textContent = "";
     $("#tabSource").textContent = "";
     $("#tabEngineMidi").classList.add("hidden");
@@ -290,8 +342,12 @@ const TabStudio = (() => {
     ]);
     if (jobId !== id || expectedSession !== session) return;
     revision = personal.revision;
+    $("#referenceExport").classList.toggle("hidden", !personal.reference_confirmed);
+    $("#revokeReference").classList.toggle("hidden", !personal.reference_confirmed);
+    $("#referenceExport").href = `/api/jobs/${id}/tab-reference?instrument=${instrument()}`;
     savedDocument = personal.document && (personal.document.instrument || "guitar") === instrument() &&
       (personal.document.source_engine || "basic_pitch") === engine ? personal.document : null;
+    $("#confirmReference").checked = !!personal.reference_confirmed && !!savedDocument;
     if (savedDocument) applyDocument(savedDocument);
     taskControls(task.status, task);
     if (["queued", "working"].includes(task.status) || task.busy_engine) pollTask(id, engine);
@@ -483,10 +539,15 @@ const TabStudio = (() => {
       : state.tabEngine === "gaps" ? "GAPS · 實驗"
       : state.tabEngine === "tabcnn" ? "TabCNN · 實驗"
       : state.tabEngine === "hybrid" ? "整合 v2 · 實驗"
+      : state.tabEngine === "verified" ? "音訊校驗 · 實驗"
       : state.current.pure_guitar || state.current.result.guitar_tab?.source === "original"
       ? "純吉他"
       : "吉他分離軌";
     const warning = [];
+    const verified = state.tabVerification, summary = $("#verificationSummary");
+    summary.classList.toggle("hidden", isBass() || state.tabEngine !== "verified" || !verified);
+    $("#verificationPreviewPanel").classList.toggle("hidden", isBass() || state.tabEngine !== "verified" || !verified);
+    if (verified) summary.textContent = `校驗 ${verified.reviewed_notes} 音 · 調整 ${verified.changed_notes} 音 · ${verified.uncertain_notes} 音仍有疑點。${verified.calibrated_pitches ? `使用 ${verified.calibrated_pitches} 個私人校準音高。` : ""}音頻相似度不是正確率；原版與你的修正保留。`;
     if (isBass() && diagnostics.omittedNotes) warning.push(`${diagnostics.omittedNotes} 音無法配置到目前弦格，可試 Drop D／五弦或檢查誤音`);
     const rhythmWarning = !rhythm.manual && !state.current.result.rhythm?.bpm
       ? `尚無拍點分析，暫以 ${rhythm.bpm} BPM 排版，可手動調整。`
@@ -633,7 +694,8 @@ const TabStudio = (() => {
     controls();
     const document = { revision, notes: copy(notes), ...context(), rhythm: { ...rhythm } };
     try {
-      const result = await api(`/api/jobs/${id}/tab?instrument=${instrument()}`, {
+      const confirmed = $("#confirmReference").checked;
+      const result = await api(`/api/jobs/${id}/tab?instrument=${instrument()}&confirmed_reference=${confirmed}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(document),
@@ -641,11 +703,14 @@ const TabStudio = (() => {
       if (jobId !== id || session !== expectedSession) return;
       revision = result.revision;
       savedDocument = result.document;
+      $("#referenceExport").classList.toggle("hidden", !result.reference_confirmed);
+      $("#revokeReference").classList.toggle("hidden", !result.reference_confirmed);
+      $("#referenceExport").href = `/api/jobs/${id}/tab-reference?instrument=${instrument()}`;
       if (editSerial === expectedEdit && key() === expectedContext) {
         loadedDocument = result.document;
         dirty = false;
       }
-      toast("已儲存到你的帳號");
+      toast(result.reference_confirmed ? "已儲存，手動修正加入私人校驗資料" : "已儲存到你的帳號");
     } catch (error) {
       if (jobId === id && session === expectedSession) toast(error.message, true);
     } finally {

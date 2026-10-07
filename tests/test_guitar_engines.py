@@ -133,6 +133,61 @@ class GuitarEngineTests(unittest.TestCase):
         self.assertEqual(paths(self.directory, "basic_pitch")[0].read_bytes(), original)
         self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=hybrid").json()["status"], "done")
 
+    def test_verified_variant_uses_existing_notes_and_preserves_originals(self):
+        self.assertEqual(self.post("verified").json()["status"], "queued")
+        baseline = paths(self.directory,"basic_pitch")[0].read_bytes()
+        def command(args, **kwargs):
+            self.assertIn("audio_verification_worker.py",args[1])
+            self.assertEqual(args[args.index("--notes-cache")+1],str(paths(self.directory,"basic_pitch")[0]))
+            Path(args[3]).write_text(json.dumps({"profile":"guitar_verified_v1","notes":[],"refinement":{"changed_notes":0}}))
+            Path(args[4]).write_bytes(b"MThd")
+            Path(args[args.index("--preview")+1]).write_bytes(b"RIFF")
+        with patch.object(main,"run_command",side_effect=command):
+            main.process_guitar_task("song")
+        self.assertEqual(paths(self.directory,"basic_pitch")[0].read_bytes(),baseline)
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=verified").json()["status"],"done")
+        self.assertEqual(self.client.get("/api/jobs/song/verification-preview").content,b"RIFF")
+        self.assertFalse((self.directory/"stem-midi/verification-references.private.json").exists())
+        self.assertEqual(self.post("verified").json()["status"],"done")
+
+    def test_verification_requires_existing_notes_and_has_no_unsafe_engine_paths(self):
+        paths(self.directory,"basic_pitch")[0].unlink()
+        self.assertEqual(self.post("verified").status_code,400)
+        self.assertEqual(self.post("../../verified").status_code,400)
+
+    def test_reference_audio_jobs_are_mounted_readonly_in_sandbox(self):
+        other = main.JOBS / "reference"
+        other.mkdir()
+        reference = other / "audio.wav"
+        reference.write_bytes(b"audio")
+        command = [str(main.GUITAR_PYTHON),str(main.ROOT/"tools/audio_verification_worker.py"),
+                   str(self.directory/"audio.wav"),"--reference-audio",str(reference)]
+        with patch.object(main,"BWRAP",Path("/usr/bin/true")):
+            sandbox = main.sandbox_command(command,False)
+        expected = ["--ro-bind",str(other),str(other)]
+        self.assertTrue(any(sandbox[index:index+3] == expected for index in range(len(sandbox))))
+
+    def test_verification_calibration_does_not_read_other_users_private_references(self):
+        self.post("verified")
+        document = json.dumps({"notes":[{"start":0,"end":1,"midi":64,"edited":True}]})
+        alice = main.identity_key({"sub":"alice@example.com","provider":"google"})
+        bob = main.identity_key({"sub":"bob@example.com","provider":"google"})
+        with main.db() as connection:
+            connection.execute("INSERT OR IGNORE INTO users(id,subject,provider,display_name,is_admin,is_blocked,created_at,last_seen) VALUES (?,?,?,'Bob',0,0,1,1)",(bob,"bob@example.com","google"))
+            for viewer in [alice,bob]:
+                connection.execute("INSERT INTO tab_references VALUES ('song',?,'guitar',1,?,1)",(viewer,document))
+        def command(args, **kwargs):
+            references = json.loads(Path(args[args.index("--references")+1]).read_text())
+            self.assertEqual(len(references),1)
+            self.assertEqual(references[0]["notes"][0]["midi"],64)
+            self.assertEqual(references[0]["audio"],str(self.directory/"audio.wav"))
+            Path(args[3]).write_text(json.dumps({"profile":"guitar_verified_v1","notes":[]}))
+            Path(args[4]).write_bytes(b"MThd")
+            Path(args[args.index("--preview")+1]).write_bytes(b"RIFF")
+        with patch.object(main,"run_command",side_effect=command):
+            main.process_guitar_task("song")
+        self.assertEqual(self.client.get("/api/jobs/song/guitar-analysis?engine=verified").json()["status"],"done")
+
     def test_chord_refinement_durable_shared_queue_and_preserved_manual_edits(self):
         (self.directory / "chordino.json").write_text(json.dumps({"chords": self.baseline["methods"]["chordino"]}))
         response = self.client.post("/api/jobs/song/chord-refinement", headers={"Origin": "http://testserver"})
