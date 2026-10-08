@@ -13,12 +13,16 @@ METRICS = (("pitch_onset", "micro_f1"), ("pitch_onset_offset", "micro_f1"),
 def assess(summary: dict, baseline: str, candidate: str,
            conditions: set[str] = REQUIRED_CONDITIONS) -> list[str]:
     issues = []
+    if baseline == candidate:
+        issues.append("基準與候選版本不能相同")
     if not summary.get("complete_selection") or summary.get("evaluated_clips") != summary.get("selected_clips"):
         issues.append("對照集尚未全部完成")
     if summary.get("model_training_overlap") not in {"none", "verified_none"}:
         issues.append("對照集可能與模型訓練資料重疊，不能作獨立盲測")
-    groups = {(row["engine"], row["split"], row["source_condition"]): row
-              for row in summary.get("groups", []) if row.get("genre") == "all"}
+    selected = [row for row in summary.get("groups", []) if row.get("genre") == "all"]
+    groups = {(row["engine"], row["split"], row["source_condition"]): row for row in selected}
+    if len(groups) != len(selected):
+        issues.append("評測摘要存在重複的版本／分組")
     improved = False
     for condition in sorted(conditions):
         for split in ("development", "regression"):
@@ -27,6 +31,9 @@ def assess(summary: dict, baseline: str, candidate: str,
             if not left or not right or min(left.get("clips", 0), right.get("clips", 0)) < 3:
                 issues.append(f"{condition}/{split}：兩版本各需至少三段獨立音訊")
                 continue
+            if (not left.get("clip_ids") or left["clip_ids"] != right.get("clip_ids")
+                    or len(set(left["clip_ids"])) != left["clips"]):
+                issues.append(f"{condition}/{split}：兩版本必須評測完全相同且不重複的音訊")
             for category, metric in METRICS:
                 old = left.get("metrics", {}).get(category, {}).get(metric)
                 new = right.get("metrics", {}).get(category, {}).get(metric)

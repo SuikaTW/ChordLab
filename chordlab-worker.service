@@ -1,5 +1,5 @@
 [Unit]
-Description=ChordLab private music analysis service
+Description=ChordLab durable analysis worker
 After=network-online.target
 Wants=network-online.target
 ConditionPathIsMountPoint=/mnt/sdb
@@ -9,7 +9,7 @@ Type=simple
 WorkingDirectory=/home/suika/chordlab
 EnvironmentFile=/home/suika/chordlab/.env
 Environment=CHORDLAB_EMBEDDED_WORKER=false
-ExecStart=/home/suika/chordlab/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8788 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/home/suika/chordlab/.venv/bin/python -m app.worker
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

@@ -31,15 +31,34 @@ def summarize(root):
             exact=sum(row['displayed_tab'].get('fingering_agreement',0)*row['displayed_tab'].get('reference_fingerings',0) for row in displayed)
             metrics['displayed_tab']={'micro_f1':round(2*matched/max(1,expected+actual),4),
                 'actual_fingering_agreement':round(exact/known,4) if known else None}
-        output.append({'engine':engine,'split':split,'genre':genre,'source_condition':condition,'clips':len(rows),'metrics':metrics})
+        output.append({'engine':engine,'split':split,'genre':genre,'source_condition':condition,
+            'clips':len(rows),'clip_ids':sorted(row['id'] for row in rows),'metrics':metrics})
     ids={row['id'] for row in report['reports']}
+    chord_groups={}
+    for row in report['reports']:
+        tracks=row.get('chord_annotations') or []
+        if tracks:
+            chord_groups.setdefault(row['engine'],[]).append(tracks[0]['metrics'])
+    chord_metrics={}
+    for engine,rows in chord_groups.items():
+        seconds=sum(row['annotated_seconds'] for row in rows)
+        matched=sum(row['boundary_matched'] for row in rows)
+        predicted=sum(row['boundary_predicted_count'] for row in rows)
+        expected=sum(row['boundary_reference_count'] for row in rows)
+        chord_metrics[engine]={
+            'clips':len(rows), 'annotated_seconds':round(seconds,3),
+            'exact_chord_duration_agreement':round(sum(row['exact_chord_duration_agreement']*row['annotated_seconds'] for row in rows)/seconds,4) if seconds else None,
+            'boundary_f1':round(2*matched/max(1,predicted+expected),4),
+            'boundary_reference_count':expected,'boundary_predicted_count':predicted,'boundary_matched':matched,
+        }
     result={'schema':1,'pipeline_sha256':report['pipeline_sha256'],'evaluation_sha256':report['evaluation_sha256'],
         'manifest_sha256':report['manifest_sha256'],'selected_clips':len(manifest['records']),'evaluated_clips':len(ids),
         'complete_selection':ids=={row['id'] for row in manifest['records']},
         'genres':sorted({row.get('genre','unknown') for row in manifest['records']}),
         'condition_policy':'derived_cases_are_not_real_electric_or_band_and_not_independent_samples',
         'model_training_overlap':report['model_training_overlap'],
-        'metrics_policy':'separate_development_regression_genre_and_source_condition_no_training', 'groups':output}
+        'metrics_policy':'separate_development_regression_genre_and_source_condition_no_training',
+        'chord_metrics_first_annotation_weighted':chord_metrics, 'groups':output}
     (root/'summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
     print(json.dumps({key:result[key] for key in ('evaluated_clips','selected_clips','complete_selection','genres')},ensure_ascii=False))
     return result

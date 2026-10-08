@@ -66,6 +66,8 @@ PYTHONPATH="$PWD/.venv/lib/python3.14/site-packages" nice -n 10 uv run --no-proj
 
 `tools/benchmark_verification.py` 提供可重現的合成單音／多音測試，使用既有 `benchmark_guitar.py` 計算修正前後音高與起音 F1；`tests/audio_verification_checks.py` 額外測試不同音色與保守防護。合成測試和頻譜損失改善都不是實際歌曲的正確率，仍需要獨立標註真實歌曲來評估。支援 `/tab-reference?instrument=guitar|bass` 下載私人快照，資料標示為使用者確認、非獨立驗證。
 
+獨立錄音與人工標註的匯入、和弦邊界／TAB 評測及發布門檻，見 [準確度對照集說明](docs/accuracy-evaluation.zh-TW.md)。
+
 連續 TAB 不會退回使用完整混音。「和弦＋吉他譜」會先分離吉他，預設先試聽，再選擇是否產生吉他 MIDI／TAB；各軌 MIDI 仍是獨立選項。來源已是單把吉他時，可選純吉他模式跳過分離。譜面以估計小節排列，依畫面寬度與音符密度調整每行小節數；「簡潔」略去極短、極弱音符，「完整」保留更多結果。
 
 使用者可以選擇把完成的分析公開至共享曲庫。公開分析可供搜尋，並依登入使用者的不重複瀏覽數或收藏數排行；網址與分析選項完全相同的公開結果會直接重複使用，以節省分析時間。私人分析只有擁有者與管理員能看見。

@@ -17,7 +17,8 @@ class AccuracyGateTests(unittest.TestCase):
                        ("pitch_onset", "pitch_onset_offset", "displayed_tab")}
             metrics["displayed_tab"]["actual_fingering_agreement"] = score
             return {"engine": engine, "split": split, "genre": "all",
-                    "source_condition": "real_acoustic_guitar", "clips": 3, "metrics": metrics}
+                    "source_condition": "real_acoustic_guitar", "clips": 3,
+                    "clip_ids": [f"{split}-{index}" for index in range(3)], "metrics": metrics}
         report = {"complete_selection": True, "selected_clips": 6, "evaluated_clips": 6,
                   "model_training_overlap": "verified_none",
                   "groups": [row("old", "development", .80), row("new", "development", .83),

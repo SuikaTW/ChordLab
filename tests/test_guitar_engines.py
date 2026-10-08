@@ -369,6 +369,8 @@ class GuitarEngineTests(unittest.TestCase):
                 result["methods"].pop("cross_verified",None)
                 result["methods"]["chordino"][0].update(chord="G",manual=True)
                 connection.execute("UPDATE jobs SET result=?",(json.dumps(result),))
+        with main.db() as connection:
+            connection.execute("UPDATE guitar_tasks SET status='queued' WHERE job_id='song'")
         with patch.object(main,"run_command",side_effect=concurrent): main.process_guitar_task("song")
         current=self.client.get("/api/jobs/song").json()["result"]
         self.assertNotIn("cross_verified",current["methods"])

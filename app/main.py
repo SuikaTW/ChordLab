@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import base64
 import hashlib
 import hmac
@@ -78,6 +79,7 @@ MAX_REQUEST_BODY = MAX_UPLOAD + 1024 * 1024
 MIN_FREE_UPLOAD = MAX_UPLOAD + 512 * 1024 * 1024
 MAX_DURATION = int(os.getenv("CHORDLAB_MAX_DURATION_MIN", "20")) * 60
 ANALYSIS_WORKERS = max(1, min(3, int(os.getenv("CHORDLAB_ANALYSIS_WORKERS", "1"))))
+EMBEDDED_WORKER = os.getenv("CHORDLAB_EMBEDDED_WORKER", "true").lower() not in {"0", "false", "no"}
 MAX_ACTIVE_PER_USER = max(1, min(10, int(os.getenv("CHORDLAB_MAX_ACTIVE_PER_USER", "2"))))
 MAX_TOTAL_PENDING = max(1, min(200, int(os.getenv("CHORDLAB_MAX_TOTAL_PENDING", "24"))))
 DAILY_JOB_LIMIT = max(1, min(100, int(os.getenv("CHORDLAB_DAILY_JOB_LIMIT", "5"))))
@@ -559,6 +561,8 @@ def startup() -> None:
     if not BWRAP or not BWRAP.is_file() or not FFMPEG.is_file() or not FFPROBE.is_file() or not DENO.is_file() or not YTDLP.is_file():
         raise RuntimeError("分析沙箱、ffmpeg、ffprobe、Deno 或 yt-dlp 尚未安裝，服務拒絕啟動")
     init_db()
+    if not EMBEDDED_WORKER:
+        return
     with db() as connection:
         connection.execute("UPDATE jobs SET status='cancelled',message='已取消' WHERE status='working' AND cancel_requested=1")
         connection.execute("UPDATE jobs SET status='queued', progress=2, message='服務重啟，已重新加入佇列' WHERE status='working'")
@@ -1169,21 +1173,24 @@ def delete_admin_job_locked(request: Request, job_id: str, update: AdminDeleteJo
     actor = require_admin(request)
     if not re.fullmatch(r"[0-9a-f]{32}", job_id) or not hmac.compare_digest(update.confirm, job_id):
         raise HTTPException(400, "刪除確認不符")
-    with db() as connection:
-        row = connection.execute("SELECT id,title,status,owner FROM jobs WHERE id=?", (job_id,)).fetchone()
-        guitar_task = connection.execute("SELECT status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "找不到分析工作")
-    if row["status"] in {"queued", "working"} or guitar_task and guitar_task["status"] in {"queued", "working"}:
-        raise HTTPException(409, "不能刪除排隊中或處理中的工作")
     source_dir = JOBS / job_id
     trash_root = JOBS / ".admin-trash"
     moved_dir = trash_root / f"{job_id}-{int(time.time())}"
-    if source_dir.exists():
-        trash_root.mkdir(mode=0o700, exist_ok=True)
-        source_dir.rename(moved_dir)
     try:
         with db() as connection:
+            # The web and analysis worker are separate processes. Hold SQLite's
+            # write lock through the status check and directory move so a new
+            # refinement cannot be queued between them.
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT id,title,status,owner FROM jobs WHERE id=?", (job_id,)).fetchone()
+            guitar_task = connection.execute("SELECT status FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, "找不到分析工作")
+            if row["status"] in {"queued", "working"} or guitar_task and guitar_task["status"] in {"queued", "working"}:
+                raise HTTPException(409, "不能刪除排隊中或處理中的工作")
+            if source_dir.exists():
+                trash_root.mkdir(mode=0o700, exist_ok=True)
+                source_dir.rename(moved_dir)
             connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
             audit_admin(
                 actor,
@@ -1481,7 +1488,8 @@ def enqueue_refinement_task(request: Request, row: sqlite3.Row, engine: str, par
                     WHEN guitar_tasks.engine=excluded.engine THEN attempts+1 ELSE 1 END,
                 engine=excluded.engine,parameters=excluded.parameters,created_at=excluded.created_at,updated_at=excluded.updated_at""", (job_id, engine, now, now,json.dumps(parameters) if parameters else None))
             connection.execute("INSERT INTO guitar_submissions(job_id,owner,engine,created_at) VALUES (?,?,?,?)", (job_id, row["owner"], engine, now))
-        executor.submit(process_guitar_task, job_id)
+        if EMBEDDED_WORKER:
+            executor.submit(process_guitar_task, job_id)
     return {"status": "queued"}
 
 
@@ -1660,7 +1668,9 @@ def process_guitar_task(job_id: str) -> None:
         original = guitar_uses_original(initial, json.loads(initial["result"] or "{}"))
         task = connection.execute("SELECT engine FROM guitar_tasks WHERE job_id=?", (job_id,)).fetchone()
         engine = task["engine"] if task else "basic_pitch"
-        connection.execute("UPDATE guitar_tasks SET status='working',updated_at=? WHERE job_id=?", (int(time.time()), job_id))
+        claimed = connection.execute("UPDATE guitar_tasks SET status='working',updated_at=? WHERE job_id=? AND status='queued'", (int(time.time()), job_id)).rowcount
+    if not claimed:
+        return
     try:
         if engine == "bass":
             process_bass_task(job_id)
@@ -1950,9 +1960,10 @@ async def create_job(
                 (job_id, display_title, source_detail, source, "queued", 2, "等待處理", int(separate_stems), separation_model, int(stem_midi), int(transcribe_lyrics), int(pure_guitar), int(is_public), now if is_public else None, owner, now, now),
             )
             connection.execute("UPDATE jobs SET review_guitar=? WHERE id=?", (int(review_guitar), job_id))
-        if source == "url":
-            schedule_download(job_id, source_detail)
-        executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics, pure_guitar, review_guitar=review_guitar)
+        if EMBEDDED_WORKER:
+            if source == "url":
+                schedule_download(job_id, source_detail)
+            executor.submit(process_job, job_id, source, source_detail, separate_stems, separation_model, stem_midi, transcribe_lyrics, pure_guitar, review_guitar=review_guitar)
     return {"id": job_id, "status": "queued"}
 
 
@@ -2787,26 +2798,35 @@ def build_audio_mix(job_id: str, selected: list[str]) -> Path:
                 key_lock = threading.Lock()
                 mix_key_locks[lock_key] = key_lock
         with key_lock:
-            if not output.is_file():
-                mixes.mkdir(mode=0o700, exist_ok=True)
-                if sum(1 for path in mixes.glob("*.m4a") if path.is_file()) >= 64:
-                    raise HTTPException(429, "這首歌的同步混音快取已達上限")
-                temporary = mixes / f"{mix_key}.building.m4a"
-                temporary.unlink(missing_ok=True)
-                command = [str(FFMPEG), "-nostdin", "-y"]
-                for source in sources:
-                    command.extend(("-i", str(source)))
-                command.extend((
-                    "-filter_complex_threads", "1", "-filter_complex",
-                    f"amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95",
-                    "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "192k",
-                    "-threads", "1", "-movflags", "+faststart", str(temporary),
-                ))
-                try:
-                    run_command(command, timeout=600)
-                    temporary.replace(output)
-                finally:
-                    temporary.unlink(missing_ok=True)
+            # Web processes share this cache; the in-memory lock alone cannot
+            # protect the same output when uvicorn has multiple workers.
+            mixes.mkdir(mode=0o700, exist_ok=True)
+            with (mixes / f"{mix_key}.lock").open("a+b") as lock_file:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+                return _build_audio_mix_locked(output, mixes, mix_key, sources)
+    return output
+
+
+def _build_audio_mix_locked(output: Path, mixes: Path, mix_key: str, sources: list[Path]) -> Path:
+    if not output.is_file():
+        if sum(1 for path in mixes.glob("*.m4a") if path.is_file()) >= 64:
+            raise HTTPException(429, "這首歌的同步混音快取已達上限")
+        temporary = mixes / f"{mix_key}.building.m4a"
+        temporary.unlink(missing_ok=True)
+        command = [str(FFMPEG), "-nostdin", "-y"]
+        for source in sources:
+            command.extend(("-i", str(source)))
+        command.extend((
+            "-filter_complex_threads", "1", "-filter_complex",
+            f"amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95",
+            "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "192k",
+            "-threads", "1", "-movflags", "+faststart", str(temporary),
+        ))
+        try:
+            run_command(command, timeout=600)
+            temporary.replace(output)
+        finally:
+            temporary.unlink(missing_ok=True)
     return output
 
 
