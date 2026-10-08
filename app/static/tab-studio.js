@@ -37,7 +37,8 @@ const TabStudio = (() => {
     source_engine: state.tabEngine || "basic_pitch",
     fingering_mode: $("#tabFingering").value,
   });
-  const key = () => JSON.stringify(context());
+  const key = () => JSON.stringify({ ...context(), chord_shape_assist: $("#tabChordShapeAssist").checked,
+    chord_method: $("#tabChordShapeAssist").checked && !loadedDocument ? state.method : null });
 
   function bind() {
     $("#revokeReference").addEventListener("click", async () => {
@@ -134,6 +135,12 @@ const TabStudio = (() => {
     });
     $("#tabFingering").addEventListener("change", () => {
       if (!reconfigure()) return;
+      signature = "";
+      render();
+    });
+    $("#tabChordShapeAssist").addEventListener("change", () => {
+      if (!reconfigure()) return;
+      localStorage.setItem(tabStorageKey("chord-shape-assist"), $("#tabChordShapeAssist").checked ? "true" : "false");
       signature = "";
       render();
     });
@@ -276,6 +283,9 @@ const TabStudio = (() => {
       node.value = [...node.options].some((option) => option.value === value) ? value : node.options[0].value;
     }
     state.tabDensity = localStorage.getItem(tabStorageKey("density", id)) === "full" ? "full" : "clean";
+    $("#tabChordShapeAssist").checked = !isBass() && localStorage.getItem(tabStorageKey("chord-shape-assist", id)) === "true";
+    $("#tabChordShapeOption").classList.toggle("hidden", isBass() || state.tabTuning !== "standard");
+    $("#tabChordShapeHint").classList.toggle("hidden", isBass() || state.tabTuning !== "standard");
     $$("[data-tab-density]").forEach((button) => button.classList.toggle("active", button.dataset.tabDensity === state.tabDensity));
     $("#guitarPreview").textContent = isBass() ? "試聽 Bass" : "試聽吉他";
     $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine));
@@ -307,6 +317,7 @@ const TabStudio = (() => {
       $("#tabPosition").value = previous.position;
       $("#tabRole").value = previous.role || "auto";
       $("#tabFingering").value = previous.fingering_mode || "model";
+      $("#tabChordShapeAssist").checked = Boolean(previous.chord_shape_assist);
       $$("[data-tab-density]").forEach((button) =>
         button.classList.toggle("active", button.dataset.tabDensity === previous.density)
       );
@@ -357,6 +368,8 @@ const TabStudio = (() => {
     $("#tabEngineMidi").classList.add("hidden");
     $("#tabEngineMidi").removeAttribute("href");
     $("#tabFingeringOptions").classList.toggle("hidden", isBass() || !["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine));
+    $("#tabChordShapeOption").classList.toggle("hidden", isBass() || state.tabTuning !== "standard");
+    $("#tabChordShapeHint").classList.toggle("hidden", isBass() || state.tabTuning !== "standard");
     controls();
     $("#generateGuitarTab").classList.add("hidden");
     $("#recommendedTab").disabled = false;

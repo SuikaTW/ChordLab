@@ -1,6 +1,33 @@
+import "../app/static/chord-theory.js";
+import "../app/static/chord-voicings.js";
 import "../app/static/tab-engine.js";
 
 const { assign } = globalThis.ChordLabTab;
+Deno.test("optional chord-shape evidence nudges arpeggio strings without changing pitches", () => {
+  const shape = [-1, 3, 2, 0, 1, 0];
+  const source = [48, 52, 55, 60, 64].map((midi, index) => note(midi, index * .25, .2));
+  const plain = assign(source, { position: "middle" });
+  const assisted = assign(source, { position: "middle", chordShapeAssist: true,
+    chordShapes: [{ start: 0, end: 2, shapes: [shape] }] });
+  const fromLabel = assign(source, { position: "middle", chordShapeAssist: true,
+    chordShapes: [{ start: 0, end: 2, label: "C" }] });
+  const matches = (result) => result.notes.filter((n) => shape[n.string] === n.fret).length;
+  assert(matches(assisted) > matches(plain), "A supported C arpeggio should favor its playable C shape");
+  assert(assisted.notes.map((n) => n.midi).join(",") === plain.notes.map((n) => n.midi).join(","),
+    "Shape evidence never changes recognized pitches");
+  assert(assisted.diagnostics.chordShapeSegments === 1, "Only a supported segment contributes");
+  assert(fromLabel.diagnostics.chordShapeSegments === 1, "Worker can derive shapes from a chord label");
+  const unrelated = assign(source, { position: "middle", chordShapeAssist: true,
+    chordShapes: [{ start: 0, end: 2, shapes: [[3, 2, 0, 0, 0, 3]] }] });
+  assert(unrelated.diagnostics.chordShapeSegments === 0, "Disagreeing chord labels must not steer TAB");
+  assert(assign(source, { tuning: "drop_d", chordShapeAssist: true,
+    chordShapes: [{ start: 0, end: 2, shapes: [shape] }] }).diagnostics.chordShapeSegments === 0,
+    "Standard-tuning voicings cannot steer alternate tunings");
+  const manual = assign([{ ...source[0], edited: true, string: 0, fret: 8 }, ...source.slice(1)],
+    { chordShapeAssist: true, chordShapes: [{ start: 0, end: 2, shapes: [shape] }] });
+  assert(manual.notes.find((n) => n.index === 0)?.string === 0, "Manual string choice stays authoritative");
+  playable(assisted); playable(unrelated); playable(manual);
+});
 Deno.test("context fingering preserves repeated chord pitches and manual anchors", () => {
   const pitches = [48, 52, 55, 60, 64];
   const source = [0, 1.5, 3].flatMap((start) => pitches.map((pitch) => note(pitch, start, .5)));

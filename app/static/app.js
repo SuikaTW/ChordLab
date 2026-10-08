@@ -200,6 +200,8 @@ function bindEvents() {
     if (!TabStudio.reconfigure()) return;
     state.tabTuning = event.target.value;
     if (state.current) localStorage.setItem(tabStorageKey("tuning"), state.tabTuning);
+    $("#tabChordShapeOption").classList.toggle("hidden", state.tabTuning !== "standard");
+    $("#tabChordShapeHint").classList.toggle("hidden", state.tabTuning !== "standard");
     renderContinuousTab();
   });
   for (const [id, key] of [["tabVoice", "voice"], ["tabPosition", "position"],["tabRole","role"]]) {
@@ -1137,7 +1139,7 @@ async function loadContinuousTab() {
 function assignTabNotes(notes) {
   state.tabCancel?.();
   return new Promise((resolve) => {
-    const worker = new Worker("/static/tab-worker.js?v=10");
+    const worker = new Worker("/static/tab-worker.js?v=12");
     state.tabWorker = worker;
     let settled = false;
     const finish = (result) => {
@@ -1176,6 +1178,12 @@ function assignTabNotes(notes) {
         position: $("#tabPosition").value,
         role: $("#tabRole").value,
         contextReview: Boolean(state.tabContextReview),
+        chordShapeAssist: state.tabInstrument !== "bass" && (state.tabTuning || "standard") === "standard" && $("#tabChordShapeAssist").checked,
+        chordShapes: state.tabInstrument !== "bass" && $("#tabChordShapeAssist").checked ? chords().map((segment) => ({
+          start: segment.start, end: segment.end, confidence: segment.confidence,
+          uncertain: segment.refinement?.uncertain,
+          label: playedChord(segment.chord),
+        })) : [],
         useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });
@@ -1292,6 +1300,7 @@ function switchMethod(method, announce = true) {
   );
   renderTimeline();
   renderEditor();
+  if ($("#tabChordShapeAssist").checked && !TabStudio.inspect().dirty) renderContinuousTab();
   if (announce) toast(`已切換到${{local_review:"局部修正版",event_verified:"建議版",cross_verified:"交叉校驗",chord_v2:"和弦 v2（實驗）",ensemble:"雙引擎比對",chordino:"原本辨識"}[method] || "音符推算"}`);
 }
 

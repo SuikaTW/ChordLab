@@ -57,10 +57,41 @@
     return Math.max(0, frets.size - 4) * 6;
   }
 
+  function chordContexts(notes, rows, tuning, capo) {
+    if (!Array.isArray(rows) || tuning.length !== 6) return [];
+    return rows.slice(0, 1000).flatMap((row, index) => {
+      const start = Number(row.start), end = Number(row.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end-start < .4 ||
+          row.uncertain || row.confidence != null && Number(row.confidence) < .6) return [];
+      const inputShapes = Array.isArray(row.shapes) ? row.shapes :
+        root.ChordLabVoicings?.positions(row.label)?.map((voicing) => voicing.shape) || [];
+      const shapes = inputShapes.slice(0, 6)
+        .map((shape) => Array.isArray(shape) && shape.length === 6 && shape.every((fret) =>
+          Number.isInteger(fret) && fret >= -1 && fret + capo <= 24) ? shape : null)
+        .filter(Boolean);
+      if (!shapes.length) return [];
+      const observed = notes.filter((note) => note.start >= start && note.start < end).slice(0, 120);
+      if (observed.length < 2) return [];
+      const classes = new Set(shapes[0].flatMap((fret, string) =>
+        fret < 0 ? [] : [(tuning[string] + capo + fret) % 12]));
+      const chordTones = observed.filter((note) => classes.has(note.midi % 12));
+      if (chordTones.length / observed.length < .65 ||
+          new Set(chordTones.map((note) => note.midi % 12)).size < 2) return [];
+      const ranked = shapes.map((shape) => {
+        const pitches = shape.map((fret, string) => fret < 0 ? null : tuning[string] + capo + fret);
+        const matches = chordTones.filter((note) => pitches.includes(note.midi));
+        return { shape, pitches, matches: matches.length, distinct: new Set(matches.map((note) => note.midi)).size };
+      }).filter((item) => item.distinct >= 2)
+        .sort((a, b) => b.matches-a.matches || b.distinct-a.distinct);
+      if (!ranked.length || ranked[0].matches / chordTones.length < .5) return [];
+      return [{ index, start, end, shapes: ranked.slice(0, 3) }];
+    });
+  }
+
   function phraseBeam(candidates, width, start) {
     const unique = new Map();
     for (const candidate of candidates.sort((a, b) => a.cost - b.cost)) {
-      const key = `${candidate.position}:${JSON.stringify(candidate.chordMemory || null)}:` + candidate.active.map((note) =>
+      const key = `${candidate.position}:${candidate.shapeChoice?.join('/') || ''}:${JSON.stringify(candidate.chordMemory || null)}:` + candidate.active.map((note) =>
         note && note.end > start + .025 ? `${note.midi}/${note.fret}/${Math.round(note.end * 100)}` : "-").join(",") +
         ":" + candidate.placed.map((note) => `${note.midi}/${note.string}`).join(",");
       if (!unique.has(key)) unique.set(key, candidate);
@@ -78,6 +109,8 @@
     const stringCount = tuning.length;
     const capo = bass ? 0 : Math.min(11, Math.max(0, Math.round(Number(options.capo) || 0)));
     const prepared = prepare(notes, clean), groups = [];
+    const chordRows = !bass && (!options.tuning || options.tuning === "standard") && options.chordShapeAssist ?
+      chordContexts(prepared, options.chordShapes, tuning, capo) : [];
     for (const note of prepared) {
       const last = groups[groups.length - 1];
       if (last && note.start - last.start <= .025 && !last.notes.some((n) =>
@@ -103,7 +136,10 @@
       parent: null,
       placed: [],
     }];
+    let chordShapeGroups = 0;
     for (const group of groups) {
+      const chordRow = chordRows.find((row) => row.start <= group.start && group.start < row.end);
+      if (chordRow) chordShapeGroups++;
       // A single instrument cannot sound more independent notes than strings.
       const pitches = [...group.notes].sort((a, b) => b.velocity - a.velocity)
         .slice(0, stringCount).sort((a, b) => a.midi - b.midi);
@@ -188,7 +224,7 @@
         }
         partial = next.sort((a, b) => a.cost - b.cost).slice(0, width);
       }
-      beam = partial.map((candidate) => {
+      beam = partial.flatMap((candidate) => {
         const frets = candidate.placed.filter((n) => n.fret > 0).map((n) => n.fret).sort((a, b) => a - b);
         const position = frets.length ? frets[Math.floor(frets.length / 2)] : candidate.position;
         const gap = group.start - (candidate.parent.placed[0]?.start ?? group.start);
@@ -200,7 +236,17 @@
           key: candidate.placed.map((note) => note.midi).join(","), start: group.start,
           strings: Object.fromEntries(candidate.placed.map((note) => [note.midi, note.string])),
         } : candidate.chordMemory;
-        return { ...candidate, position, chordMemory, cost: candidate.cost + shiftCost + sustainSpan + fingers };
+        const base = candidate.cost + shiftCost + sustainSpan + fingers;
+        if (!chordRow) return [{ ...candidate, position, chordMemory, shapeChoice: null, cost: base }];
+        return chordRow.shapes.map((shape, choice) => {
+          const matched = candidate.placed.filter((note) => !note.edited && shape.pitches.includes(note.midi));
+          const agreement = matched.reduce((total, note) =>
+            total + (shape.shape[note.string] === note.fret ? -.5 : .45), 0);
+          const previous = candidate.parent.shapeChoice;
+          const switchCost = previous && previous[0] === chordRow.index && previous[1] !== choice ? .7 : 0;
+          return { ...candidate, position, chordMemory, shapeChoice: [chordRow.index, choice],
+            cost: base + Math.max(-1.5, Math.min(1.5, agreement)) + switchCost + choice * .08 };
+        });
       });
       beam = phraseBeam(beam, width, group.start);
       // Normalize accumulated costs to keep long songs numerically stable.
@@ -219,6 +265,8 @@
       sustainConflicts: 0,
       techniqueConflicts: 0,
       fingerOverloads: 0,
+      chordShapeSegments: chordRows.length,
+      chordShapeGroups,
     };
     let previousShape = null;
     for (const placed of chunks) {

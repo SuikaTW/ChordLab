@@ -1,12 +1,21 @@
+import "../app/static/chord-theory.js";
+import "../app/static/chord-voicings.js";
 import "../app/static/tab-engine.js";
 const [notesPath, referencePath, outputPath, mode] = Deno.args;
 const notes = JSON.parse(await Deno.readTextFile(notesPath)).notes;
 const reference = JSON.parse(await Deno.readTextFile(referencePath));
+const chordShapeAssist = mode === "model-chord" || mode === "playable-chord";
+const chordShapes = chordShapeAssist ? JSON.parse(await Deno.readTextFile(
+  notesPath.replace(/[^/]+$/, "chordino.json"))).chords.map((segment) => ({
+    start: segment.start, end: segment.end, confidence: segment.confidence,
+    shapes: ChordLabVoicings.positions(segment.chord).map((voicing) => voicing.shape),
+  })) : [];
 const result = ChordLabTab.assign(notes, {
   tuning: reference.tuning || "standard",
   capo: reference.capo || 0,
-  useModelFingering: mode === "model" || mode === "model-context",
+  useModelFingering: mode === "model" || mode === "model-context" || mode === "model-chord",
   contextReview: mode === "model-context",
+  chordShapeAssist, chordShapes,
 });
 function matches(expected, exact) {
   const edges = expected.map((event) => result.notes.flatMap((note, index) =>

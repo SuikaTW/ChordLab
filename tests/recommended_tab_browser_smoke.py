@@ -47,10 +47,17 @@ def run():
                     route.continue_()
             page.route(f"**/api/jobs/{JOB}/guitar-analysis?engine=*", guard_post)
             page.goto(BASE)
+            page.wait_for_function("() => state.viewer && state.current && state.jobs.length")
             # The song may be beyond the first page of the library.
             page.evaluate("(id) => openJob(id, false, true)", JOB)
             page.locator('[data-result-view="tab"]').click()
-            page.wait_for_function("() => state.tabEngine === 'event_verified' && TabStudio.inspect().count > 0")
+            try:
+                page.wait_for_function("() => state.tabEngine === 'event_verified' && TabStudio.inspect().count > 0")
+            except Exception as error:
+                raise AssertionError((width, errors, page.evaluate("""() => ({
+                    engine: state.tabEngine, source: state.tabSource,
+                    tab: TabStudio.inspect(), toast: document.querySelector('#toast').textContent
+                })"""))) from error
             assert not page.locator("#tabEngineOption").evaluate("e => e.open")
             assert not page.locator("#tabEngine").is_visible()
             assert page.locator("#recommendedTab").inner_text() == "查看建議譜"
@@ -67,6 +74,21 @@ def run():
             }""")
             page.wait_for_function("() => state.tabEngine === 'event_verified' && TabStudio.inspect().count > 0")
             assert page.locator("#tabEngineMidi").get_attribute("href").endswith("event_verified")
+            before = page.evaluate("TabStudio.inspect().count")
+            page.evaluate("""() => {
+                const control = document.querySelector('#tabChordShapeAssist');
+                control.checked = true;
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+            }""")
+            page.wait_for_function("() => !document.querySelector('#continuousTab').hasAttribute('aria-busy') && TabStudio.inspect().count > 0")
+            assert page.evaluate("TabStudio.inspect().count") == before
+            assert page.locator("#tabChordShapeAssist").is_checked()
+            page.evaluate("""() => {
+                const control = document.querySelector('#tabChordShapeAssist');
+                control.checked = false;
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+            }""")
+            page.wait_for_function("() => !document.querySelector('#continuousTab').hasAttribute('aria-busy') && TabStudio.inspect().count > 0")
             assert not posts, "Viewing ready recommendations must not generate"
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
 

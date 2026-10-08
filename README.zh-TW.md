@@ -286,6 +286,8 @@ tests/local_review_browser_smoke.py 只模擬確認，不寫入正式歌曲；te
 
 2026-10-08 的固定原始輸出比對記錄於 benchmarks/evaluation-20261008.json：12 段真實木吉他、5 種曲風，建議版音高／起音 micro-F1 從 0.8994 到 0.8997，加入音長後從 0.7351 到 0.7392；幅度小，回歸子集起音分數反而微降（0.9368 → 0.9360），仍有錯補音。這批和弦分數沒有改善，不能宣稱和弦準確度已提升。另完成 2／8 個預備衍生壓力案例，並非電吉他或樂團真實測試，也不是盲測。
 
+和弦指型輔助 TAB 的測試結果與限制：見 [實驗紀錄](docs/chord-shape-tab-experiment-20261008.zh-TW.md)。
+
 ## 授權與致謝
 
 - Basic Pitch：Spotify AB，Apache-2.0。
