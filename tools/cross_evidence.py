@@ -194,7 +194,7 @@ def bass_pitch_class(samples, center):
     return int(round(midi))%12 if periodicity>=.7 else None
 
 
-def review_chords(samples, notes, cross, bass=None, review_range=None, dense=False, acoustic=True):
+def review_chords(samples, notes, cross, bass=None, review_range=None, dense=False, acoustic=True, context_review=False):
     import numpy as np
     if samples.ndim != 1 or not np.isfinite(samples).all():
         raise ValueError("Invalid chord-review audio")
@@ -212,7 +212,7 @@ def review_chords(samples, notes, cross, bass=None, review_range=None, dense=Fal
     dictionary = {midi:template(midi) for midi in range(36,100)}
     by_start = sorted(cross.harmony_notes or notes,key=lambda note:note["start"])
     from tools.harmonic_context import HarmonicContext,components
-    audit=HarmonicContext(samples,by_start,review_range,dense) if acoustic else None
+    audit=HarmonicContext(samples,by_start,review_range,dense,refine=context_review) if acoustic else None
     summary['acoustic_boundaries']=len(audit.boundaries) if audit else 0
     summary['acoustic_proposals_not_extra_votes']=True
     starts = [note["start"] for note in by_start]
@@ -236,8 +236,10 @@ def review_chords(samples, notes, cross, bass=None, review_range=None, dense=Fal
             summary['added_boundaries']+=len(pieces)-1
         prepared.extend(pieces)
     audio_checks = 0
+    sequence_rows = []
     for original in prepared:
         segment = dict(original); output.append(segment)
+        sequence_rows.append([dict(chord=original['chord'],loss=0.,baseline=True)])
         pcs = tones(original["chord"])
         span = original["end"]-original["start"]
         if original.get("manual") or not pcs or span < .4 or review_range and not (original['start']>=review_range[0]-.001 and original['end']<=review_range[1]+.001):
@@ -284,6 +286,7 @@ def review_chords(samples, notes, cross, bass=None, review_range=None, dense=Fal
             return sum(weight for note,weight in zip(relevant,weights) if note["midi"]%12 in allowed)/sum(weights)
         pitches = [midi for midi in range(36,89) if midi%12 in pcs]
         before = [fit(pitches,spec,dictionary) for spec in observed]
+        sequence_rows[-1][0]['loss']=sum(before)/2
         best,best_loss = None,sum(before)
         bass_classes=[bass_pitch_class(bass,center) for center in centers] if bass is not None else []
         best_root_source=None
@@ -329,6 +332,9 @@ def review_chords(samples, notes, cross, bass=None, review_range=None, dense=Fal
                 total=sum(min(.5,n['end']-n['start']) for n in relevant)
                 extra_notes=all(sum(min(.5,n['end']-n['start']) for n in relevant if n['midi']%12==pc)>=total*.08 for pc in proposed_pcs)
                 spectral=spectral and extra_notes and compatibility(proposed_pcs)>=.75 and all(new<.65 for new in after)
+            if spectral or root_supported:
+                sequence_rows[-1].append(dict(chord=label,loss=sum(after)/2,
+                    root_support=root_source if root_supported and not spectral else None))
             if (spectral or root_supported) and (best is None or sum(after) < best_loss):
                 best,best_loss,best_root_source = label,sum(after),root_source if root_supported and not spectral else None
         if best:
@@ -340,5 +346,22 @@ def review_chords(samples, notes, cross, bass=None, review_range=None, dense=Fal
             summary["changed_segments"] += 1
             summary['bass_supported_changes'] += int(best_root_source=='bass')
             summary['harmonic_root_changes'] += int(best_root_source=='harmonic_notes')
+    if context_review:
+        from tools.recognition_context import sequence_choices
+        selected=sequence_choices(sequence_rows)
+        revised=0
+        for segment,choice in zip(output,selected):
+            if choice['chord']==segment['chord']:
+                continue
+            revised+=1
+            segment['chord']=choice['chord']
+            segment.setdefault('refinement',{}).update(sequence_selected=True,
+                changed=not choice.get('baseline',False),source='locally_validated_sequence',root_support=choice.get('root_support'))
+            # Diagnostics computed for the former winner no longer describe this choice.
+            segment['refinement'].pop('components',None)
+            segment['refinement'].pop('spectral_gain',None)
+        summary['sequence_revisions']=revised
+        summary['sequence_policy']='local_audio_eligible_only_soft_switch_cost_no_key_forcing'
+        summary['changed_segments']=sum(segment['chord']!=original['chord'] for segment,original in zip(output,prepared))
     summary['audio_checks'] = audio_checks
     return output,summary

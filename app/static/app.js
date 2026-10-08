@@ -1109,6 +1109,8 @@ async function loadContinuousTab() {
   state.tabJob = `${jobId}:${instrument}:${engine}`;
   state.tabSource = "unavailable";
   state.tabNotes = [];
+  state.tabContextReview = false;
+  state.tabLearnedAudit = null;
   const hasGuitar = instrument === "bass" ? (separation.midi_stems || []).includes("bass") : engine === "basic_pitch" ? (separation.midi_stems || []).includes("guitar") :
     state.current.result.guitar_tab?.variants?.[engine]?.status === "done";
   try {
@@ -1118,6 +1120,8 @@ async function loadContinuousTab() {
     ]);
     if (generation !== state.tabLoad || state.current?.id !== jobId || (state.tabEngine || "basic_pitch") !== engine || state.tabInstrument !== instrument) return;
     state.tabNotes = payload?.notes || [];
+    state.tabContextReview = Boolean(payload?.context_review);
+    state.tabLearnedAudit = payload?.learned_note_audit || null;
     state.tabProfile = payload?.profile || "general";
     state.tabVerification = ["verified", "cross_verified", "event_verified"].includes(engine) ? payload?.refinement : null;
     state.tabEventReview = engine === "event_verified" ? payload?.event_review : null;
@@ -1171,6 +1175,7 @@ function assignTabNotes(notes) {
         voice: $("#tabVoice").value,
         position: $("#tabPosition").value,
         role: $("#tabRole").value,
+        contextReview: Boolean(state.tabContextReview),
         useModelFingering: state.tabInstrument !== "bass" && ["tabcnn", "hybrid", "cross_verified", "event_verified"].includes(state.tabEngine) && $("#tabFingering").value === "model",
       },
     });

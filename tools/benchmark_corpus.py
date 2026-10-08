@@ -68,7 +68,7 @@ def weighted_chords(reference, predicted, duration):
         metric_policy='exact_label_separate_from_root_and_base_quality_rich_harte_decomposition')
 
 
-def run(root, infer=False, limit=None, reuse_raw_report=None):
+def run(root, infer=False, limit=None, reuse_raw_report=None, context_review=False):
     from dotenv import load_dotenv
     load_dotenv(ROOT/".env")
     from app import main
@@ -94,9 +94,10 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
                 raise RuntimeError("Live analyses active; rerun the resumable benchmark later")
     code_paths=["tools/basic_pitch_worker.py","tools/guitar_worker.py","tools/guitar_refinement.py",
         "tools/audio_verification.py","tools/audio_verification_worker.py","tools/cross_evidence.py",
-        "tools/event_verification.py","tools/temporal_verification.py","tools/harmonic_context.py","tools/chordino_worker.py","app/static/tab-engine.js"]
+        "tools/event_verification.py","tools/temporal_verification.py","tools/harmonic_context.py","tools/chordino_worker.py","app/static/tab-engine.js",
+        "tools/recognition_context.py","tools/note_plausibility.py","tools/audio_verification_worker.py"]
     code_hashes={name:checksum(ROOT/name) for name in code_paths}
-    pipeline=hashlib.sha256(json.dumps(code_hashes,sort_keys=True).encode()).hexdigest()
+    pipeline=hashlib.sha256(json.dumps(dict(code=code_hashes,context_review=context_review),sort_keys=True).encode()).hexdigest()
     evaluation_paths=["tools/benchmark_corpus.py","tools/benchmark_guitar.py",
         "tools/evaluate_fingering.js","tools/reference_corpus.py"]
     evaluation=hashlib.sha256(json.dumps({name:checksum(ROOT/name) for name in evaluation_paths},sort_keys=True).encode()).hexdigest()
@@ -136,6 +137,7 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
                     evidence=directory/"evidence.json"
                     evidence.write_text(json.dumps(dict(models=models,methods={"chordino":chords},active_method="chordino",harmony_notes=models['basic_pitch']['notes'])))
                     command=[str(main.GUITAR_PYTHON),str(ROOT/"tools/audio_verification_worker.py"),str(local_audio),str(output),str(midi),"--notes-cache",str(directory/"hybrid.json"),"--cross-evidence",str(evidence),"--harmony-audio",str(local_audio),*(["--event-review"] if engine=="event_verified" else [])]
+                    if context_review and engine=='event_verified':command.append('--context-review')
                 else:
                     command=[str(main.GUITAR_PYTHON),str(ROOT/"tools/guitar_worker.py"),str(local_audio),str(output),str(midi),"--engine",engine,*(["--gaps-cache",str(directory/"gaps.json")] if engine=="hybrid" else [])]
                 started=time.monotonic()
@@ -154,7 +156,7 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
                 fingering=directory/(engine+"-fingering.json")
                 # Use the actual client allocator, not a separate idealized one.
                 subprocess.run([str(ROOT/"bin/deno"),"run","--allow-read="+str(directory)+","+str(reference),"--allow-write="+str(directory),
-                    str(ROOT/"tools/evaluate_fingering.js"),str(path),str(reference),str(fingering),"model"],timeout=120,
+                    str(ROOT/"tools/evaluate_fingering.js"),str(path),str(reference),str(fingering),"model-context" if context_review else "model"],timeout=120,
                     check=True,capture_output=True,text=True,cwd=ROOT,env=main.command_environment())
                 report["displayed_tab"]=json.loads(fingering.read_text())
                 if predicted.get("event_review"): report["event_review"]=predicted["event_review"]
@@ -177,6 +179,7 @@ def run(root, infer=False, limit=None, reuse_raw_report=None):
         if any(checksum(ROOT/name)!=digest for name,digest in code_hashes.items()):
             raise ValueError('Inference code changed during evaluation; rerun under its new fingerprint')
         result=dict(schema=1,source=manifest["source"],model_training_overlap=manifest["model_training_overlap"],
+            context_review=context_review,
             pipeline_sha256=pipeline,inference_code_hashes=code_hashes,evaluation_sha256=evaluation,manifest_sha256=manifest_hash,
             policy="references_not_passed_to_inference_no_automatic_training",reused_raw_predictions=reuse_provenance,reports=reports,aggregate=aggregate)
         (root/"report.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
@@ -190,7 +193,8 @@ def main():
     parser.add_argument("--infer",action="store_true")
     parser.add_argument("--limit",type=int)
     parser.add_argument("--reuse-raw-report",type=Path,help="Explicit checksum-verified fixed raw predictions; cross/event stages rerun")
+    parser.add_argument('--context-review',action='store_true')
     args=parser.parse_args()
-    run(args.root,args.infer,args.limit,args.reuse_raw_report)
+    run(args.root,args.infer,args.limit,args.reuse_raw_report,args.context_review)
 
 if __name__=="__main__": main()

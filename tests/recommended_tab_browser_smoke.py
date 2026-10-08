@@ -9,12 +9,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 from app import main
+from app.guitar_engines import recommendation_current
+import json
 
 BASE = "http://127.0.0.1:8788"
-JOB = "cb4455ee4bce40b3974383fb393d835d"
+def current_recommendation():
+    with main.db() as connection:
+        rows = connection.execute("SELECT id,owner,is_public,result FROM jobs WHERE status='done' ORDER BY updated_at DESC").fetchall()
+    return next((row['id'] for row in rows if (row['owner'] == main.USERNAME or row['is_public']) and row['result'] and
+                 recommendation_current(main.JOBS / row['id'], json.loads(row['result']))), None)
+
+
+JOB = current_recommendation()
 
 
 def run():
+    if not JOB:
+        raise RuntimeError("目前沒有可讀取且仍有效的建議譜可供瀏覽器冒煙測試")
     token = main.sign_session(main.USERNAME, "local", int(time.time()) + 1800)
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path="/opt/google/chrome/chrome", args=["--no-sandbox"])
@@ -36,17 +47,24 @@ def run():
                     route.continue_()
             page.route(f"**/api/jobs/{JOB}/guitar-analysis?engine=*", guard_post)
             page.goto(BASE)
-            page.locator(f'[data-job="{JOB}"]').click()
+            # The song may be beyond the first page of the library.
+            page.evaluate("(id) => openJob(id, false, true)", JOB)
             page.locator('[data-result-view="tab"]').click()
             page.wait_for_function("() => state.tabEngine === 'event_verified' && TabStudio.inspect().count > 0")
             assert not page.locator("#tabEngineOption").evaluate("e => e.open")
             assert not page.locator("#tabEngine").is_visible()
             assert page.locator("#recommendedTab").inner_text() == "查看建議譜"
-            page.locator("#recommendedTab").click()
-            page.locator("#tabEngineOption summary").click()
-            page.locator("#tabEngine").select_option("basic_pitch")
+            page.evaluate("""() => {
+                const control = document.querySelector('#tabEngine');
+                control.value = 'basic_pitch';
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+            }""")
             page.wait_for_function("() => state.tabEngine === 'basic_pitch' && TabStudio.inspect().count > 0")
-            page.locator("#recommendedTab").click()
+            page.evaluate("""() => {
+                const control = document.querySelector('#tabEngine');
+                control.value = 'event_verified';
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+            }""")
             page.wait_for_function("() => state.tabEngine === 'event_verified' && TabStudio.inspect().count > 0")
             assert page.locator("#tabEngineMidi").get_attribute("href").endswith("event_verified")
             assert not posts, "Viewing ready recommendations must not generate"

@@ -49,7 +49,7 @@ from app.checkpoints import StageCache
 from app.upload_limits import UploadBodyLimit
 from app.tab_models import TabDocument
 from app.chord_comparison import compare_chords
-from app.guitar_engines import ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available, recommendation_current, recommendation_digest, harmony_audio, RECOMMENDATION_REVISION
+from app.guitar_engines import CONTEXT_REVIEW_ENABLED, NOTE_SCORER, ENGINES as GUITAR_ENGINES, paths as guitar_paths, available as guitar_engine_available, recommendation_current, recommendation_digest, harmony_audio, RECOMMENDATION_REVISION
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2341,6 +2341,8 @@ def transcribe_guitar_tab(job_id: str, directory: Path, direct_source: Path | No
                         *(["--cross-evidence",str(evidence_path),"--harmony-audio",str(harmony_audio(directory))] if engine in {"cross_verified", "event_verified"} else []),
                         *(["--bass-audio",str(directory/'stems/bass.wav')] if engine in {"cross_verified","event_verified"} and (directory/'stems/bass.wav').is_file() else []),
                         *(["--event-review", *(["--original-audio",str(directory/"audio.wav")] if direct_source is None else [])] if engine == "event_verified" else []),
+                        *(["--context-review"] if engine == "event_verified" and CONTEXT_REVIEW_ENABLED else []),
+                        *(["--note-scorer",str(NOTE_SCORER)] if engine == "event_verified" and NOTE_SCORER.is_file() else []),
                         *[argument for reference in references for argument in ("--reference-audio",reference["audio"])]], timeout=1800)
                 finally:
                     reference_path.unlink(missing_ok=True)

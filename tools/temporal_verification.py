@@ -90,12 +90,13 @@ def refine_offsets(notes, cross, envelope, original=None):
     return edits, reviewed
 
 
-def split_retrigger(output, pitch, start, end, voters, peaks, envelope, original=None):
-    sustaining = [n for n in output if n['midi'] == pitch and n['start'] + .18 < start < n['end'] - .08]
+def split_retrigger(output, pitch, start, end, voters, peaks, envelope, original=None, fast=False):
+    minimum = .09 if fast else .18
+    sustaining = [n for n in output if n['midi'] == pitch and n['start'] + minimum < start < n['end'] - .08]
     if len(sustaining) != 1 or sustaining[0].get('edited') or len(output) >= 20000:
         return None
     at = bisect.bisect_left(peaks, start - .025)
-    if at >= len(peaks) or peaks[at] > start + .025 or len(voters) < 2 or end - start < .18:
+    if at >= len(peaks) or peaks[at] > start + .025 or len(voters) < 2 or end - start < minimum:
         return None
     if harmonic_conflict(output, pitch, start + .06, sustaining[0]):
         return None

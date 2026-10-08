@@ -3,8 +3,11 @@ from pathlib import Path
 from functools import lru_cache
 import hashlib
 import json
+import os
 
 RECOMMENDATION_REVISION = 6
+CONTEXT_REVIEW_ENABLED = os.getenv('CHORDLAB_CONTEXT_REVIEW', 'false').lower() in {'1','true','yes'}
+NOTE_SCORER = Path(__file__).resolve().parents[1] / 'app/models/note-plausibility-v1.json'
 
 ENGINES = {
     "basic_pitch": {"label": "原版", "profile": "guitar_v2", "file": "guitar"},
@@ -54,8 +57,15 @@ def recommendation_digest(directory: Path, result: dict) -> str:
         path = directory/name
         if path.is_file():
             info=path.stat();audio[name]=(info.st_size,info.st_mtime_ns,info.st_ino)
+    scorer=None
+    if NOTE_SCORER.is_file():
+        info=NOTE_SCORER.stat();scorer=_digest_file(str(NOTE_SCORER),info.st_size,info.st_mtime_ns,info.st_ino)
     data=dict(revision=RECOMMENDATION_REVISION,models=models,methods=methods,audio=audio,harmony_notes=result.get('notes',[]),
         active_method=result.get("active_method") if result.get("active_method") in methods else None)
+    if CONTEXT_REVIEW_ENABLED:
+        data['context_review']=True
+    if scorer:
+        data['note_scorer']=scorer
     return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 

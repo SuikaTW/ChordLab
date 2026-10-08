@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--bass-audio",type=Path)
     parser.add_argument("--event-review",action="store_true")
     parser.add_argument("--original-audio",type=Path)
+    parser.add_argument("--context-review",action="store_true")
+    parser.add_argument("--note-scorer",type=Path)
     args = parser.parse_args()
     started = time.monotonic()
     samples, _ = librosa.load(args.audio, sr=16000, mono=True)
@@ -51,22 +53,26 @@ def main():
     event_summary = None
     if args.event_review:
         original,_ = librosa.load(args.original_audio,sr=16000,mono=True) if args.original_audio else (None,None)
-        notes,event_summary = refine_events(samples,notes,cross,original)
+        notes,event_summary = refine_events(samples,notes,cross,original,context_review=args.context_review)
         summary.update(timing_policy="bounded_onset_offset_retrigger_repairs",note_count_policy="bounded_independent_additions_and_retriggers",
             limitations=["spectral_gain_is_not_accuracy","no_string_identification","no_automatic_training","event_edits_experimental"])
     payload = dict(engine="event_verified" if args.event_review else "cross_verified" if cross else "verified", profile="guitar_event_verified_v1" if args.event_review else "guitar_cross_verified_v1" if cross else "guitar_verified_v1", duration=round(len(samples)/16000,4),
         notes=notes, note_count=len(notes), refinement=summary, experimental=True,
         source_engine=source.get("engine", "basic_pitch"),
+        context_review=args.context_review,
         elapsed_seconds=round(time.monotonic()-started,3), confidence_kind="uncalibrated_spectral_fit")
     if event_summary:
         payload["event_review"] = event_summary
+    if args.note_scorer:
+        from tools.note_plausibility import load_model,audit_notes
+        payload['learned_note_audit']=audit_notes(samples,notes,load_model(args.note_scorer))
     if cross:
         payload.update(fingering_tuning="standard",fingering_capo=0)
         harmony,_ = librosa.load(args.harmony_audio,sr=16000,mono=True) if args.harmony_audio else (samples,16000)
         if abs(len(harmony)-len(samples))/16000 > .05:
             raise ValueError("Harmony recording is not time-aligned")
         bass,_ = librosa.load(args.bass_audio,sr=16000,mono=True) if args.bass_audio else (None,None)
-        payload["chords"],payload["chord_review"] = review_chords(harmony,notes,cross,bass)
+        payload["chords"],payload["chord_review"] = review_chords(harmony,notes,cross,bass,context_review=args.context_review)
         payload["elapsed_seconds"] = round(time.monotonic()-started,3)
     write_midi(notes, args.midi)
     if args.preview:

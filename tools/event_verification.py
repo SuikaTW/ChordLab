@@ -63,7 +63,7 @@ def repeated_phrases(notes):
     return dict(matched_patterns=len(examples),examples=examples[:20],policy="exact_pitch_rhythm_hint_not_copy_or_training")
 
 
-def refine_events(samples, notes, cross, original=None):
+def refine_events(samples, notes, cross, original=None, context_review=False):
     samples = np.asarray(samples,dtype=float)
     duration = len(samples)/SR
     validate(notes,duration)
@@ -128,12 +128,13 @@ def refine_events(samples, notes, cross, original=None):
             if candidate_checks > 512: continue
             start = float(np.median([n["start"] for n in voters.values()]))
             end = min(duration,float(np.median([n["end"] for n in voters.values()])))
-            if not 40<=pitch<=88 or end-start<.18 or not has_attack(start): continue
+            minimum=.09 if context_review and len(voters)>=2 and max(n['start'] for n in voters.values())-min(n['start'] for n in voters.values())<=.025 else .18
+            if not 40<=pitch<=88 or end-start<minimum or not has_attack(start): continue
             same = [n for n in output if n["midi"]==pitch and abs(n["start"]-start)<.1]
             if same: continue
             # Splitting a long event is a retrigger candidate, not safe to force.
             if any(n["midi"]==pitch and n["start"]<start<n["end"] for n in output):
-                split = split_retrigger(output,pitch,start,end,voters,peaks,envelope,original_envelope) if retriggers < 64 else None
+                split = split_retrigger(output,pitch,start,end,voters,peaks,envelope,original_envelope,fast=context_review) if retriggers < 64 else None
                 if split:
                     edits.append(split); retriggers += 1
                 else:
@@ -195,4 +196,8 @@ def refine_events(samples, notes, cross, original=None):
         addition_evidence_policy="stricter_gate_not_default_due_to_regression_recall_loss",
         training_policy="none_no_predictions_as_reference",offset_policy="bounded_two_model_audio_drop",false_note_policy="review_only_no_automatic_deletion")
     validate(retained,duration)
+    from tools.recognition_context import audio_repeats
+    summary['audio_repeats']=audio_repeats(samples,retained)
+    if context_review:
+        summary['timing_mode']='fast_events_require_close_independent_onsets_and_local_attack'
     return retained,summary

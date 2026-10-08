@@ -50,10 +50,17 @@
     return Math.max(0, span - 4) ** 2 * 1.5;
   }
 
+  function fingerCost(notes) {
+    // Notes on one fret can share a barre; five distinct held frets cannot
+    // normally be stopped by four fretting fingers. Keep this a soft cost.
+    const frets = new Set(notes.filter((note) => note.fret > 0).map((note) => note.fret));
+    return Math.max(0, frets.size - 4) * 6;
+  }
+
   function phraseBeam(candidates, width, start) {
     const unique = new Map();
     for (const candidate of candidates.sort((a, b) => a.cost - b.cost)) {
-      const key = `${candidate.position}:` + candidate.active.map((note) =>
+      const key = `${candidate.position}:${JSON.stringify(candidate.chordMemory || null)}:` + candidate.active.map((note) =>
         note && note.end > start + .025 ? `${note.midi}/${note.fret}/${Math.round(note.end * 100)}` : "-").join(",") +
         ":" + candidate.placed.map((note) => `${note.midi}/${note.string}`).join(",");
       if (!unique.has(key)) unique.set(key, candidate);
@@ -107,6 +114,7 @@
         parent,
         placed: [],
         used: new Set(),
+        chordMemory: parent.chordMemory,
       }));
       for (const note of pitches) {
         const next = [];
@@ -163,7 +171,12 @@
             const techniqueCost = technique && previous && note.start-previous.end < .15 && note.start-previous.start < .8 ?
               (string !== previous.string ? 8 : technique === "slide" && (fret === 0 || previous.fret === 0) ||
                technique === "hammer_on" && fret <= previous.fret || technique === "pull_off" && fret >= previous.fret ? 5 : -1) : 0;
-            const cost = candidate.cost + fret * .025 + movement + crossing * 3 + continuity +
+            const shapeKey = pitches.map((item) => item.midi).join(",");
+            const memory = candidate.chordMemory;
+            const shapeCost = options.contextReview && pitches.length >= 3 && memory?.key === shapeKey &&
+              note.start - memory.start < 8 && !manual ?
+              (memory.strings[note.midi] === string ? -.18 : .18) : 0;
+            const cost = candidate.cost + fret * .025 + movement + crossing * 3 + continuity + shapeCost +
               preference + hintCost + spanCost(placed) - spanCost(candidate.placed) +
               sustainCost + repeatShape + techniqueCost;
             const active = [...candidate.active];
@@ -182,7 +195,12 @@
         const shiftCost = Math.abs(position - candidate.parent.position) * (gap > .8 ? .04 : .18);
         const held = candidate.active.filter((note) => note && note.end > group.start + .04);
         const sustainSpan = Math.max(0, spanCost(held) - spanCost(candidate.placed)) * .6;
-        return { ...candidate, position, cost: candidate.cost + shiftCost + sustainSpan };
+        const fingers = options.contextReview ? fingerCost(held) : 0;
+        const chordMemory = options.contextReview && candidate.placed.length >= 3 ? {
+          key: candidate.placed.map((note) => note.midi).join(","), start: group.start,
+          strings: Object.fromEntries(candidate.placed.map((note) => [note.midi, note.string])),
+        } : candidate.chordMemory;
+        return { ...candidate, position, chordMemory, cost: candidate.cost + shiftCost + sustainSpan + fingers };
       });
       beam = phraseBeam(beam, width, group.start);
       // Normalize accumulated costs to keep long songs numerically stable.
@@ -200,10 +218,12 @@
       rapidShifts: 0,
       sustainConflicts: 0,
       techniqueConflicts: 0,
+      fingerOverloads: 0,
     };
     let previousShape = null;
     for (const placed of chunks) {
       if (!placed.length) continue;
+      if (fingerCost(placed) > 0) diagnostics.fingerOverloads++;
       const frets = placed.filter((n) => n.fret > 0).map((n) => n.fret);
       if (frets.length && Math.max(...frets) - Math.min(...frets) > 5) {
         diagnostics.wideShapes++;

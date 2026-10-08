@@ -5,7 +5,8 @@ const reference = JSON.parse(await Deno.readTextFile(referencePath));
 const result = ChordLabTab.assign(notes, {
   tuning: reference.tuning || "standard",
   capo: reference.capo || 0,
-  useModelFingering: mode === "model",
+  useModelFingering: mode === "model" || mode === "model-context",
+  contextReview: mode === "model-context",
 });
 function matches(expected, exact) {
   const edges = expected.map((event) => result.notes.flatMap((note, index) =>

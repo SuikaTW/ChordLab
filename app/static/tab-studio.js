@@ -619,6 +619,8 @@ const TabStudio = (() => {
     eventBox.replaceChildren();
     const reviewItems = state.tabEngine === "event_verified" && events ? [
       ...(events.suggestions || []).slice(0, 12).map((item) => ({ start: item.start, label: item.kind === "possible_retrigger" ? "疑似重新撥弦" : item.kind === "uncertain_addition" ? "補音證據不足" : "疑似假音" })),
+      ...(events.audio_repeats?.suggestions || []).slice(0, 4).map((item) => ({ start: item.start, label: "重複段落疑似漏音" })),
+      ...(state.tabLearnedAudit?.suggestions || []).slice(0, 4).map((item) => ({ start: item.start, label: "音高待核對" })),
       ...(events.repeat_evidence?.examples || []).slice(0, 4).flatMap((item) => item.occurrences.slice(0, 3).map((start) => ({ start, label: "重複樂句" }))),
     ] : [];
     $("#eventReviewPanel").classList.toggle("hidden", isBass() || !reviewItems.length);

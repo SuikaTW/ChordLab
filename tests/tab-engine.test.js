@@ -1,6 +1,16 @@
 import "../app/static/tab-engine.js";
 
 const { assign } = globalThis.ChordLabTab;
+Deno.test("context fingering preserves repeated chord pitches and manual anchors", () => {
+  const pitches = [48, 52, 55, 60, 64];
+  const source = [0, 1.5, 3].flatMap((start) => pitches.map((pitch) => note(pitch, start, .5)));
+  source[0] = { ...source[0], edited: true, string: 1, fret: 3 };
+  const output = assign(source, { contextReview: true, role: "accompaniment" });
+  assert(output.notes.length === source.length, "Context cannot erase playable chord tones");
+  assert(output.notes.find((n) => n.index === 0)?.string === 1, "Manual fingering survives context");
+  assert(output.diagnostics.fingerOverloads === 0, "Ordinary C shapes do not demand five fingers");
+  playable(output);
+});
 Deno.test("explicit slide favors fretted same-string connections without inventing pitches", () => {
   const source=[note(64,0,.18),{...note(65,.18,.17),technique:"slide"},note(67,.35,.15)];
   const result=assign(source,{role:"melody"});

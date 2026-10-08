@@ -40,7 +40,7 @@ def components(label, spectra, notes, start, end):
 
 
 class HarmonicContext:
-    def __init__(self,samples,notes=(),review_range=None,dense=False):
+    def __init__(self,samples,notes=(),review_range=None,dense=False,refine=False):
         if samples.ndim!=1 or not np.isfinite(samples).all():raise ValueError('Invalid harmonic audit audio')
         self.notes=notes
         self.duration=len(samples)/SR
@@ -81,6 +81,9 @@ class HarmonicContext:
             if self.low+.5<time<self.high-.5 and all(abs(time-other[0])>=.8 for other in selected):
                 selected.append((time,strength))
             if len(selected)>=256:break
+        if refine:
+            from tools.recognition_context import refine_boundary
+            selected=[(refine_boundary(samples,time),strength) for time,strength in selected]
         self.boundaries=sorted(selected)
 
     def profile(self,start,end):
