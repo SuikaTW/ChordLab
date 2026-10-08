@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import main
+from support import runtime_patches
 
 
 class GuitarJobTests(unittest.TestCase):
@@ -25,6 +26,7 @@ class GuitarJobTests(unittest.TestCase):
             patch.object(main, "ensure_public_url", side_effect=lambda value: value),
             patch.object(main.executor, "submit"),
             patch.object(main, "schedule_download"),
+            *runtime_patches(main),
         ]
         for p in self.patches:
             p.start()

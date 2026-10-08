@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import main, worker
+from support import runtime_patches
 
 
 class DurableWorkerTests(unittest.TestCase):
@@ -13,7 +14,7 @@ class DurableWorkerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.patches = [patch.object(main, "DATA", self.root),
             patch.object(main, "DB_PATH", self.root / "db.sqlite3"),
-            patch.object(main, "JOBS", self.root / "jobs")]
+            patch.object(main, "JOBS", self.root / "jobs"), *runtime_patches(main)]
         for item in self.patches:
             item.start()
         main.init_db()

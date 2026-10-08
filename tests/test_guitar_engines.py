@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app import main
 from app.guitar_engines import paths, harmony_audio, recommendation_digest
+from support import runtime_patches
 
 
 class GuitarEngineTests(unittest.TestCase):
@@ -17,7 +18,8 @@ class GuitarEngineTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.patches = [patch.object(main, "DATA", self.root), patch.object(main, "DB_PATH", self.root / "db.sqlite3"),
             patch.object(main, "JOBS", self.root / "jobs"), patch.object(main, "SECRET", "engines-test-" * 4),
-            patch.object(main.executor, "submit"), patch.object(main, "guitar_engine_available", return_value=True)]
+            patch.object(main.executor, "submit"), patch.object(main, "guitar_engine_available", return_value=True),
+            *runtime_patches(main)]
         for item in self.patches:
             item.start()
         main.init_db()

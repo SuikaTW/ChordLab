@@ -13,6 +13,7 @@ import httpx
 from app import main
 from app.light_tasks import LightTaskPool, PoolBusy
 from app.preparation import DownloadPreparation
+from support import runtime_patches
 
 
 class TabApiTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class TabApiTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.patches = [patch.object(main, "DATA", self.root), patch.object(main, "DB_PATH", self.root / "catalog.sqlite3"),
                         patch.object(main, "JOBS", self.root / "jobs"), patch.object(main, "SECRET", "tab-test-secret-" * 4),
-                        patch.object(main.executor, "submit")]
+                        patch.object(main.executor, "submit"), *runtime_patches(main)]
         for p in self.patches:
             p.start()
         main.init_db()
