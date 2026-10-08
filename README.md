@@ -1,5 +1,7 @@
 # ChordLab
 
+For the full history of recognition, TAB, playback, and UI experiments—including negative results, evidence locations, and current rollout decisions—see the [Traditional Chinese experiment ledger](docs/experiment-ledger.zh-TW.md). The [Chinese README](README.zh-TW.md) includes a compact results summary.
+
 The Studio interface offers a persistent bottom player while reading TAB. The header style selector switches back to the original look without interrupting playback; it remembers the browser preference. The original source archive, Git tag and restore details are documented in [UI backup notes](docs/ui-redesign-20261008.md).
 
 Recent safeguards add revocable login sessions, optimistic revisions and restore history for chord edits, a streaming upload body limit, a bounded global analysis queue, and single-flight audio mixes. Daily HDD snapshots cover the database, songs, source, and private configuration; see [operations and recovery](docs/operations-20261008.md). GitHub Actions runs the isolated Python and Deno tests.
