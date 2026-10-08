@@ -22,7 +22,9 @@ class TabApiTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.patches = [patch.object(main, "DATA", self.root), patch.object(main, "DB_PATH", self.root / "catalog.sqlite3"),
                         patch.object(main, "JOBS", self.root / "jobs"), patch.object(main, "SECRET", "tab-test-secret-" * 4),
-                        patch.object(main.executor, "submit"), *runtime_patches(main)]
+                        patch.object(main.executor, "submit"),
+                        patch.object(main, "guitar_engine_available", return_value=True),
+                        *runtime_patches(main)]
         for p in self.patches:
             p.start()
         main.init_db()
