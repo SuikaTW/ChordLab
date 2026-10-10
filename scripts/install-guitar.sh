@@ -5,7 +5,7 @@ if [ ! -x .venv-guitar/bin/python ]; then
   uv venv --python 3.12 .venv-guitar
 fi
 uv pip install --python .venv-guitar/bin/python torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
-uv pip install --python .venv-guitar/bin/python -r requirements-guitar.txt
+uv pip install --python .venv-guitar/bin/python -r requirements/guitar.txt
 mkdir -p vendor/guitar/models
 guitar_download_tmp=$(mktemp vendor/guitar/models/download.XXXXXXXX)
 trap 'rm -f -- "$guitar_download_tmp"' EXIT

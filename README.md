@@ -217,7 +217,7 @@ Demucs is isolated from the web and transcription runtimes in `.venv-demucs`. Th
 
 ```bash
 uv venv .venv-demucs --python 3.12
-uv pip install --python .venv-demucs/bin/python -r requirements-demucs.txt
+uv pip install --python .venv-demucs/bin/python -r requirements/demucs.txt
 ```
 
 `bin/ffmpeg` and `bin/ffprobe` are used for decoding and encoding without requiring a system package install. YouTube imports also require yt-dlp's JavaScript runtime: `uv sync` installs `yt-dlp-ejs`, then `scripts/install-deno.sh` installs the pinned Deno build after verifying its SHA-256 digest. The first separation downloads the `htdemucs` model weights to the user cache.
@@ -226,7 +226,7 @@ The lyrics runtime is isolated in `.venv-whisper` and defaults to the multilingu
 
 ```bash
 uv venv .venv-whisper --python 3.12
-uv pip install --python .venv-whisper/bin/python -r requirements-whisper.txt
+uv pip install --python .venv-whisper/bin/python -r requirements/whisper.txt
 ```
 
 Analysis jobs use a persistent FIFO queue. `CHORDLAB_ANALYSIS_WORKERS=1` processes one song at a time and shows later submissions their queue position. `CHORDLAB_MAX_ACTIVE_PER_USER=2` prevents one account from filling the queue. Queued jobs are restored automatically after a service restart.

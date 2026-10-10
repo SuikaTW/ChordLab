@@ -4,7 +4,7 @@ cd -- "$(dirname -- "$0")/.."
 if [ ! -x .venv-btc/bin/python ]; then
   uv venv .venv-btc --python 3.12
 fi
-uv pip install --python .venv-btc/bin/python --index-strategy unsafe-best-match -r requirements-btc.txt
+uv pip install --python .venv-btc/bin/python --index-strategy unsafe-best-match -r requirements/btc.txt
 mkdir -p vendor/btc/models
 checkpoint_tmp=$(mktemp vendor/btc/models/checkpoint.XXXXXXXX)
 trap 'rm -f -- "$checkpoint_tmp"' EXIT
